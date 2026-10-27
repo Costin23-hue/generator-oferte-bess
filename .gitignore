@@ -1,0 +1,14 @@
+# Date cu prețuri și documente: rămân doar în OneDrive, nu se încarcă pe GitHub
+*.xlsx
+*.xls
+*.pptx
+*.pdf
+Oferte generate/
+
+# Fișiere generate la construirea aplicației
+build/
+dist/
+*.spec
+construire_log.txt
+versiuni_folosite.txt
+__pycache__/
