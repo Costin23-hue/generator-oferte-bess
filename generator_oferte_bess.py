@@ -197,8 +197,9 @@ def alege_folder_lucru():
 
 
 def cale_pricing():
-    """Calea aleasă manual (ținută minte), altfel căutare automată în OneDrive, altfel lângă program."""
-    for cale in (citeste_setari().get("pricing"), cauta_pricing_in_onedrive(), FISIER_PRICING):
+    """Căutare automată în folderul Purchasing din OneDrive, altfel calea aleasă manual (ținută minte),
+    altfel lângă program."""
+    for cale in (cauta_pricing_in_onedrive(), citeste_setari().get("pricing"), FISIER_PRICING):
         if cale and os.path.exists(cale):
             return cale
     raise PricingNegasit(
@@ -229,6 +230,12 @@ def incarca_date():
     """Citește toate fișierele de pricing și returnează un dicționar de DataFrame-uri."""
     sursa = cale_pricing()
     foi = citeste_copie(sursa, "*")
+    lipsa = [f for f in (FOAIE_BATERIE, FOAIE_SKID, "Auxiliary Transformer") if f not in foi]
+    if lipsa:
+        raise ValueError(f"Fișierul de prețuri citit nu are foile: {', '.join(lipsa)}.\n\n"
+                         f"Fișier citit:\n{os.path.abspath(sursa)}\n\nFoi găsite în el: {', '.join(foi)}\n\n"
+                         "Probabil e o copie veche sau alt fișier: verifică dacă OneDrive a sincronizat "
+                         "folderul Purchasing Prices Update_BESS.")
     df_bat, df_skid, df_aux = foi[FOAIE_BATERIE], foi[FOAIE_SKID], foi["Auxiliary Transformer"]
     nume_poc = next((f for f in foi if FOAIE_SKID_POC_CONTINE in f.lower()), None)
     df_poc = fixeaza_antet(foi[nume_poc]) if nume_poc else None
@@ -1040,6 +1047,10 @@ def genereaza_pptx(inlocuiri, cale_final, fara_bat=False, fara_pcs=False):
 # ======================================================================
 # INTERFAȚĂ
 # ======================================================================
+# Butonul albastru: pe Mac culoarea de fundal e ignorată (textul alb ar deveni invizibil) -> buton standard
+STIL_BUTON = {} if sys.platform == "darwin" else {"bg": "#0052cc", "fg": "white"}
+
+
 class AplicatieOferte:
     def __init__(self, root):
         self.root = root
@@ -1132,8 +1143,8 @@ class AplicatieOferte:
         ttk.Checkbutton(frame, text="Include Transformator Auxiliar", variable=self.foloseste_aux)\
             .grid(row=r + 5, column=0, columnspan=2, pady=10, sticky="w")
 
-        self.btn = tk.Button(root, text="Previzualizare și generare", bg="#0052cc", fg="white",
-                             font=("Helvetica", 12, "bold"), command=self.previzualizeaza)
+        self.btn = tk.Button(root, text="Previzualizare și generare", font=("Helvetica", 12, "bold"),
+                             command=self.previzualizeaza, **STIL_BUTON)
         self.btn.pack(pady=20, fill="x", padx=20)
 
         self.lbl_status = ttk.Label(root, text="Aștept date...", foreground="gray")
@@ -1310,7 +1321,7 @@ class AplicatieOferte:
 
         bf = ttk.Frame(win)
         bf.pack(pady=15)
-        tk.Button(bf, text="Generează", bg="#0052cc", fg="white", command=ok).pack(side="left", padx=8)
+        tk.Button(bf, text="Generează", command=ok, **STIL_BUTON).pack(side="left", padx=8)
         tk.Button(bf, text="Vezi toate skidurile", command=arata_toate).pack(side="left", padx=8)
         tk.Button(bf, text="Anulează", command=win.destroy).pack(side="left", padx=8)
         self.root.wait_window(win)
