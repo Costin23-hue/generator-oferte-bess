@@ -45,6 +45,8 @@ Fișierele cu prețuri (`.xlsx`, `.pptx`, `.pdf`) nu se încarcă aici (vezi `.g
 `Generator Oferte BESS.exe --motor` (sau `Porneste motor.bat`) pornește o fereastră mică ce verifică la 10 secunde
 folderul `Ofertare BESS/Cereri`. Fiecare cerere `.json` (scrisă de Power Automate, vezi `exemple/cerere_exemplu.json`)
 e generată ca o ofertă normală în `Oferte generate`; rezultatul se scrie în `Cereri/Rezultate/<id>.json`
-(cu căile fișierelor în OneDrive, pentru email), iar cererea e mutată în `Cereri/Procesate`.
+(cu căile fișierelor în OneDrive), iar cererea e mutată în `Cereri/Procesate`.
+O cerere cu `"tip": "previzualizare"` nu generează fișiere: răspunsul conține bateria, trafo-ul și skidurile
+compatibile (`optiuni`), din care colegul alege unul în Power Apps; cererea de generare trimite apoi `"skid"`.
 `Cereri/Liste.xlsx` conține tabelele `TabelBaterii`, `TabelBranduri`, `TabelPOC` pentru meniurile din Power Apps.
 Jurnal: `Cereri/motor_log.txt`.

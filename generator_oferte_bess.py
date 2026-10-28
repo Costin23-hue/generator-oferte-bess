@@ -1,4 +1,3 @@
-import html
 import json
 import math
 import os
@@ -1199,8 +1198,8 @@ def cale_onedrive(cale_locala):
     return "/" + os.path.relpath(cale_locala, radacina).replace(os.sep, "/")
 
 
-def proceseaza_cerere(date, baterii_map, c):
-    """Generează oferta pentru o cerere și returnează rezultatul (dicționar scris apoi în Rezultate/)."""
+def pregateste_din_cerere(date, baterii_map, c):
+    """Intrările, avertismentele și opțiunile (baterie, skiduri, trafo) pentru o cerere din Power Apps."""
     intrari = intrari_din_cerere(c)
     erori, avert = valideaza(intrari)
     if erori:
@@ -1211,12 +1210,43 @@ def proceseaza_cerere(date, baterii_map, c):
                           str(c.get("brand", "") or "Oricare").strip(),
                           int(nr) if nr.isdigit() else None,
                           str(c.get("trafo", "")).strip().lower() in ("true", "1", "da", "yes"))
-    # Skid ales explicit (numele exact din lista de alternative), altfel cel mai ieftin
+    if p["specs_lipsa"]:
+        avert.append(f"{p['specs_lipsa']}: Configuration și Weight vor fi goale în prezentare.")
+    return intrari, avert, p
+
+
+def previzualizeaza_cerere(date, baterii_map, c):
+    """Răspunsul la o cerere de previzualizare: bateria, skidurile compatibile (de ales) și trafo-ul.
+    Nu deschide Excel / PowerPoint, deci e rapid."""
+    intrari, avert, p = pregateste_din_cerere(date, baterii_map, c)
+    b, nr = p["baterie"], p["nr_baterii"]
+    trafo = p["trafo"]
+    return {
+        "status": "previzualizare",
+        "baterie": (f"{nr} x {b['tip']} = {nr_eu(round(nr * b['cap'], 3))} MWh | {bani_eu(b['pret'])} $/MWh "
+                    f"({b['incoterm']}, cotație {b['data']})"),
+        "trafo": (f"{trafo['cant']} x {trafo['nume']} ({nr_eu(trafo['kva_total'])} kVA necesari) = "
+                  f"{bani_eu(trafo['cost'], 0)} $") if trafo else "",
+        "exista_putere_exacta": p["exact"],
+        "optiuni": [{"skid": o["tip"],
+                     "text": f"{o['nr']} x {o['tip']} = {nr_eu(o['putere_totala'])} MW | {bani_eu(o['pret_total'], 0)} $",
+                     "detalii": (("✓ putere exactă" if abs(o["putere_totala"] - intrari["mw"]) < 0.01
+                                  else "putere mai mare decât cerută")
+                                 + f" | intrări DC: {o['intrari']:g} (acceptă {o['acceptate']})"
+                                 + (f" | {o['conexiune']}" if o.get("conexiune") else ""))}
+                    for o in p["lista"]],
+        "toate_skidurile": raport_skiduri(p["optiuni"], p["motive"]),
+        "avertismente": avert,
+    }
+
+
+def proceseaza_cerere(date, baterii_map, c):
+    """Generează oferta pentru o cerere și returnează rezultatul (dicționar scris apoi în Rezultate/)."""
+    intrari, avert, p = pregateste_din_cerere(date, baterii_map, c)
+    # Skid ales explicit (numele exact din previzualizare), altfel cel mai ieftin
     skid_cerut = str(c.get("skid", "")).strip().lower()
     skid = next((o for o in p["optiuni"] if o["tip"].strip().lower() == skid_cerut), p["lista"][0])
 
-    if p["specs_lipsa"]:
-        avert.append(f"{p['specs_lipsa']}: Configuration și Weight sunt goale în prezentare.")
     r = genereaza_oferta(date, intrari, p["baterie"], p["nr_baterii"], skid, p["trafo"])
     if r["eroare_pdf"]:
         avert.append(f"PDF-ul nu s-a putut crea: {r['eroare_pdf']}")
@@ -1238,31 +1268,6 @@ def proceseaza_cerere(date, baterii_map, c):
         "fisier_pdf": cale_onedrive(r["cale_pdf"]),
         "fisier_excel": cale_onedrive(r["cale_excel"]),
     }
-
-
-def text_email(r):
-    """Subiectul și conținutul (HTML) emailului trimis de Power Automate, gata făcute."""
-    e = lambda t: html.escape(str(t))
-    if r["status"] != "ok":
-        subiect = f"Oferta BESS NU a putut fi generată - {r.get('client', '')} / {r.get('proiect', '')}"
-        corp = (f"<p>Oferta pentru <b>{e(r.get('client', ''))} / {e(r.get('proiect', ''))}</b> nu a putut fi "
-                f"generată.</p><p><b>Motiv:</b><br>{e(r.get('mesaj', '')).replace(chr(10), '<br>')}</p>"
-                "<p>Corectează datele în aplicație și trimite din nou cererea.</p>")
-        return subiect, corp
-    subiect = f"Oferta BESS gata - {r['nume']}"
-    randuri = [("Client", r.get("client", "")), ("Proiect", r.get("proiect", "")),
-               ("Baterii", r["baterie"]), ("Skid", r["skid"]),
-               ("Preț total (DDP/DAP)", f"{r['pret_total_usd']} $"), ("Preț / MWh", f"{r['pret_mwh_usd']} $/MWh")]
-    corp = (f"<p>Oferta <b>{e(r['nume'])}</b> a fost generată. Fișierele (PPTX, PDF, Excel de calcul) sunt "
-            "atașate și salvate în <i>Ofertare BESS / Oferte generate</i>.</p><table border='1' cellpadding='4' "
-            "style='border-collapse:collapse'>"
-            + "".join(f"<tr><td><b>{e(a)}</b></td><td>{e(b)}</td></tr>" for a, b in randuri) + "</table>")
-    if r["alternative"]:
-        corp += ("<p><b>Alte skiduri compatibile</b> (dacă vrei unul dintre ele, alege-l în aplicație și "
-                 "retrimite cererea):</p><ul>" + "".join(f"<li>{e(a)}</li>" for a in r["alternative"]) + "</ul>")
-    if r["avertismente"]:
-        corp += "<p><b>⚠ Atenție:</b></p><ul>" + "".join(f"<li>{e(a)}</li>" for a in r["avertismente"]) + "</ul>"
-    return subiect, corp
 
 
 def scrie_json(cale, continut):
@@ -1364,14 +1369,17 @@ class Motor:
             id_cerere = str(cerere.get("id") or id_cerere)
             self.scrie(f"Cerere {id_cerere}: {cerere.get('client', '')} / {cerere.get('proiect', '')}")
             self.root.update()
-            rezultat = proceseaza_cerere(self.date, self.baterii_map, cerere)
-            self.scrie(f"  gata: {rezultat['nume']}")
+            if str(cerere.get("tip", "")).strip().lower() == "previzualizare":
+                rezultat = previzualizeaza_cerere(self.date, self.baterii_map, cerere)
+                self.scrie(f"  previzualizare: {len(rezultat['optiuni'])} skiduri compatibile")
+            else:
+                rezultat = proceseaza_cerere(self.date, self.baterii_map, cerere)
+                self.scrie(f"  gata: {rezultat['nume']}")
         except Exception as e:
             rezultat = {"status": "eroare", "mesaj": str(e)}
             self.scrie(f"  EROARE: {e}")
         rezultat.update(id=id_cerere, email=cerere.get("email", ""), client=cerere.get("client", ""),
                         proiect=cerere.get("proiect", ""), data=datetime.now().strftime("%d.%m.%Y %H:%M"))
-        rezultat["email_subiect"], rezultat["email_html"] = text_email(rezultat)
         scrie_json(os.path.join(FOLDER_REZULTATE, f"{nume_fisier_valid(id_cerere)}.json"), rezultat)
         os.replace(cale, os.path.join(FOLDER_PROCESATE, fisier))
 
