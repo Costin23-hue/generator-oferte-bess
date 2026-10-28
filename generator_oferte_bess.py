@@ -1,3 +1,4 @@
+import html
 import json
 import math
 import os
@@ -1239,6 +1240,31 @@ def proceseaza_cerere(date, baterii_map, c):
     }
 
 
+def text_email(r):
+    """Subiectul și conținutul (HTML) emailului trimis de Power Automate, gata făcute."""
+    e = lambda t: html.escape(str(t))
+    if r["status"] != "ok":
+        subiect = f"Oferta BESS NU a putut fi generată - {r.get('client', '')} / {r.get('proiect', '')}"
+        corp = (f"<p>Oferta pentru <b>{e(r.get('client', ''))} / {e(r.get('proiect', ''))}</b> nu a putut fi "
+                f"generată.</p><p><b>Motiv:</b><br>{e(r.get('mesaj', '')).replace(chr(10), '<br>')}</p>"
+                "<p>Corectează datele în aplicație și trimite din nou cererea.</p>")
+        return subiect, corp
+    subiect = f"Oferta BESS gata - {r['nume']}"
+    randuri = [("Client", r.get("client", "")), ("Proiect", r.get("proiect", "")),
+               ("Baterii", r["baterie"]), ("Skid", r["skid"]),
+               ("Preț total (DDP/DAP)", f"{r['pret_total_usd']} $"), ("Preț / MWh", f"{r['pret_mwh_usd']} $/MWh")]
+    corp = (f"<p>Oferta <b>{e(r['nume'])}</b> a fost generată. Fișierele (PPTX, PDF, Excel de calcul) sunt "
+            "atașate și salvate în <i>Ofertare BESS / Oferte generate</i>.</p><table border='1' cellpadding='4' "
+            "style='border-collapse:collapse'>"
+            + "".join(f"<tr><td><b>{e(a)}</b></td><td>{e(b)}</td></tr>" for a, b in randuri) + "</table>")
+    if r["alternative"]:
+        corp += ("<p><b>Alte skiduri compatibile</b> (dacă vrei unul dintre ele, alege-l în aplicație și "
+                 "retrimite cererea):</p><ul>" + "".join(f"<li>{e(a)}</li>" for a in r["alternative"]) + "</ul>")
+    if r["avertismente"]:
+        corp += "<p><b>⚠ Atenție:</b></p><ul>" + "".join(f"<li>{e(a)}</li>" for a in r["avertismente"]) + "</ul>"
+    return subiect, corp
+
+
 def scrie_json(cale, continut):
     """Scrie întâi într-un fișier temporar și abia apoi îl redenumește, ca OneDrive să nu urce un fișier pe jumătate."""
     temp = cale + ".tmp"
@@ -1345,6 +1371,7 @@ class Motor:
             self.scrie(f"  EROARE: {e}")
         rezultat.update(id=id_cerere, email=cerere.get("email", ""), client=cerere.get("client", ""),
                         proiect=cerere.get("proiect", ""), data=datetime.now().strftime("%d.%m.%Y %H:%M"))
+        rezultat["email_subiect"], rezultat["email_html"] = text_email(rezultat)
         scrie_json(os.path.join(FOLDER_REZULTATE, f"{nume_fisier_valid(id_cerere)}.json"), rezultat)
         os.replace(cale, os.path.join(FOLDER_PROCESATE, fisier))
 
