@@ -1047,6 +1047,308 @@ def genereaza_pptx(inlocuiri, cale_final, fara_bat=False, fara_pcs=False):
 # ======================================================================
 # INTERFAȚĂ
 # ======================================================================
+# ======================================================================
+# PREGĂTIRE ȘI GENERARE (comune pentru fereastră și pentru modul motor)
+# ======================================================================
+def branduri_skid(date):
+    """Brandurile din MV SKID + MV SKID for different POC, fără dubluri."""
+    branduri = lista_branduri(date["skid"])
+    if date.get("skid_poc") is not None:
+        branduri += [b for b in lista_branduri(date["skid_poc"]) if b not in branduri]
+    return branduri
+
+
+def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand, nr_fix, cu_trafo):
+    """Alege bateria, skidurile compatibile (de la cel mai ieftin) și trafo-ul. Nu generează fișiere."""
+    if model_baterie not in baterii_map:
+        raise ValueError(f"Bateria '{model_baterie}' nu există în Pricing.xlsx. Selectează o baterie din listă.")
+    baterie = alege_baterie(date["bat"], baterii_map[model_baterie], incoterm)
+    nr_baterii = math.ceil(intrari["mwh"] / baterie["cap"])
+    date_poc = dict(date, skid=skiduri_pentru_poc(date, intrari["poc_kv"]))
+    optiuni, motive = gaseste_skiduri(date_poc, intrari["mw"], nr_baterii, brand, nr_fix,
+                                      baterie_text=f"{baterie['brand']} {baterie['tip']}")
+    if not optiuni:
+        raise ValueError(mesaj_fara_skid(intrari["mw"], nr_baterii, brand, motive))
+
+    specs = specs_baterie(date.get("specs"), baterie["tip"])
+    specs_lipsa = None
+    if specs is None:
+        specs_lipsa = ("Specificatii_baterii_BESS.xlsx nu a fost găsit" if date.get("specs") is None else
+                       f"modelul {baterie['tip']} nu e în Specificatii_baterii_BESS.xlsx")
+        specs = {"model": baterie["tip"], "config": "", "weight": ""}
+    baterie["specs"] = specs
+
+    trafo = alege_trafo(date["aux"], nr_baterii, baterie["cap"]) if cu_trafo else None
+    lista, exact = filtreaza_skiduri(optiuni, intrari["mw"])
+    return {"baterie": baterie, "nr_baterii": nr_baterii, "optiuni": optiuni, "motive": motive,
+            "lista": lista, "exact": exact, "trafo": trafo, "specs_lipsa": specs_lipsa}
+
+
+def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None):
+    """Calculul în Excel + prezentarea PPTX + PDF, în 'Oferte generate/<nume>_vN'. Returnează căile fișierelor."""
+    # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2
+    intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"])
+    nume = NUME_PREZENTARE.format(nr_proiect=nume_fisier_valid(intrari["nr_proiect"]),
+                                  proiect=nume_fisier_valid(intrari["proiect"]),
+                                  mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) \
+           + f"_v{intrari['versiune']}"
+    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, nume))
+    os.makedirs(folder, exist_ok=True)
+
+    status("Calculez în Excel...")
+    c_brand_bat = date["bat"].columns[BAT_COL_BRAND]
+    branduri_bat = [str(x) for x in date["bat"][c_brand_bat].dropna().unique() if str(x).strip()]
+    rez = calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat, branduri_skid(date))
+
+    status("Populez prezentarea PowerPoint...")
+    inlocuiri = {
+        "[DATA]": datetime.now().strftime(FORMAT_DATA),
+        "[CLIENT]": intrari["client"],
+        "[NUME_PROIECT]": intrari["proiect"],
+        "[NR_PROIECT]": intrari["nr_proiect"],
+        "[VERSIUNE]": str(intrari["versiune"]),
+        "[LOCATIE]": intrari["locatie"],
+        "[MWH]": nr_eu(intrari["mwh"]),
+        "[MW]": nr_eu(intrari["mw"]),
+        "[PROP_MWH]": nr_eu(nr_baterii * baterie["cap"]),
+        "[PROP_MW]": nr_eu(skid["putere_totala"]),
+        "[BAT_BRAND]": baterie["brand"],
+        "[BAT_NAME]": baterie["specs"]["model"],      # codul real (ex. Y104R04C12), nu 'REPT 5,015'
+        "[NR_BAT]": str(nr_baterii),
+        "[SKID_BRAND]": skid["brand"],
+        "[SKID]": skid["tip"],
+        "[NR_SKID]": str(skid["nr"]),
+        "[PCS_POWER]": nr_eu(skid["putere_pcs"]),                        # ex. 1,25
+        "[PRET_TOTAL_USD]": f"{bani_eu(rez['pret_ddp'])} $",
+        "[PRET_MWh_USD]": f"{bani_eu(rez['pret_mwh'])} $/MWh",
+        "[EMS_YEARLY]": f"{bani_eu(rez['ems_yearly'])} $",
+        "[INCOTERMS]": INCOTERMS[baterie["incoterm"]],
+        "[POC]": nr_eu(intrari["poc_kv"]),                                # ex. 20 (unitatea kV e în tabel)
+        "[BAT_CAP]": nr_eu(baterie["cap"]),                               # ex. 5,015
+        "[BAT_CONFIG]": baterie["specs"]["config"],
+        "[BAT_WEIGHT]": baterie["specs"]["weight"],
+        "[GAR_BAT]": baterie["garantie"],
+        "[GAR_PCS]": skid["garantie"],
+        "[EXT_GAR_BAT]": bani_eu(rez["ext_gar_bat"]),
+        "[EXT_GAR_PCS]": bani_eu(rez["ext_gar_pcs"]),
+    }
+    cale_pptx = os.path.join(folder, nume + ".pptx")
+    ramase = genereaza_pptx(inlocuiri, cale_pptx,
+                            fara_bat=fara_extensie(f"{baterie['brand']} {baterie['tip']}"),
+                            fara_pcs=fara_extensie(skid["brand"]))
+
+    status("Salvez și varianta PDF...")
+    cale_pdf, eroare_pdf = os.path.join(folder, nume + ".pdf"), None
+    try:
+        pptx_in_pdf(cale_pptx, cale_pdf)
+    except Exception as e:
+        cale_pdf, eroare_pdf = None, str(e)
+    return {"nume": nume, "folder": folder, "cale_pptx": cale_pptx, "cale_pdf": cale_pdf,
+            "cale_excel": rez["cale_excel"], "eroare_pdf": eroare_pdf, "ramase": ramase, "rez": rez}
+
+
+# ======================================================================
+# MOD MOTOR: cererile vin din Power Apps / Power Automate prin OneDrive
+# ======================================================================
+# Power Automate scrie cererile ca fișiere .json în 'Ofertare BESS/Cereri'. Motorul (acest program pornit cu
+# argumentul --motor, pe un PC Windows cu Excel și PowerPoint) le generează și scrie rezultatul în
+# 'Cereri/Rezultate/<id>.json'; Power Automate trimite apoi emailul cu fișierele.
+FOLDER_CERERI = "Cereri"
+FOLDER_REZULTATE = os.path.join(FOLDER_CERERI, "Rezultate")
+FOLDER_PROCESATE = os.path.join(FOLDER_CERERI, "Procesate")
+FISIER_LISTE = os.path.join(FOLDER_CERERI, "Liste.xlsx")     # listele pentru meniurile din Power Apps
+SECUNDE_VERIFICARE = 10
+SECUNDE_ASTEPTARE_SINCRONIZARE = 5    # o cerere se procesează abia când fișierul nu s-a mai modificat de atâtea secunde
+
+
+def numar_cerere(valoare, implicit=None):
+    """'1,10' / '1.10' / 1.1 -> 1.1; gol -> implicit (sau eroare dacă implicit e None)."""
+    if valoare is None or str(valoare).strip() == "":
+        if implicit is None:
+            raise ValueError("lipsește o valoare numerică obligatorie")
+        return implicit
+    return float(str(valoare).strip().replace(" ", "").replace(",", "."))
+
+
+def intrari_din_cerere(c):
+    """Transformă cererea JSON (din Power Apps) în aceleași intrări ca formularul din fereastră."""
+    mwh = numar_cerere(c.get("mwh"))
+    return {
+        "client": str(c.get("client", "")).strip(),
+        "proiect": str(c.get("proiect", "")).strip(),
+        "locatie": str(c.get("locatie", "")).strip(),
+        "nr_proiect": str(c.get("nr_proiect", "")).strip()
+                      or NR_PROIECT_IMPLICIT.format(an_luna=datetime.now().strftime("%Y%m")),
+        "mwh": mwh,
+        "mw": numar_cerere(c.get("mw")),
+        # EMS: dacă nu e completat, aceeași regulă ca în fereastră (sub prag / de la prag)
+        "ems": numar_cerere(c.get("ems"), float(EMS_AUTO if mwh >= EMS_PRAG_MWH else EMS_SUB_PRAG)),
+        "eng": numar_cerere(c.get("eng"), 0.0),
+        "adaos": numar_cerere(c.get("adaos"), 1.10),
+        "curs": numar_cerere(c.get("curs"), 0.89),
+        "poc_kv": numar_cerere(c.get("poc_kv"), float(POC_IMPLICIT_KV)),
+    }
+
+
+def cale_onedrive(cale_locala):
+    """Calea fișierului în OneDrive, pentru Power Automate: '/Ofertare BESS/Oferte generate/.../x.pdf'."""
+    if not cale_locala:
+        return None
+    radacina = os.path.dirname(os.getcwd())
+    return "/" + os.path.relpath(cale_locala, radacina).replace(os.sep, "/")
+
+
+def proceseaza_cerere(date, baterii_map, c):
+    """Generează oferta pentru o cerere și returnează rezultatul (dicționar scris apoi în Rezultate/)."""
+    intrari = intrari_din_cerere(c)
+    erori, avert = valideaza(intrari)
+    if erori:
+        raise ValueError("\n".join(erori))
+    nr = str(c.get("nr_skiduri", "")).strip()
+    p = pregateste_oferta(date, baterii_map, intrari, str(c.get("baterie", BATERIE_IMPLICITA)).strip(),
+                          str(c.get("incoterm", INCOTERM_IMPLICIT)).strip().upper(),
+                          str(c.get("brand", "") or "Oricare").strip(),
+                          int(nr) if nr.isdigit() else None,
+                          str(c.get("trafo", "")).strip().lower() in ("true", "1", "da", "yes"))
+    # Skid ales explicit (numele exact din lista de alternative), altfel cel mai ieftin
+    skid_cerut = str(c.get("skid", "")).strip().lower()
+    skid = next((o for o in p["optiuni"] if o["tip"].strip().lower() == skid_cerut), p["lista"][0])
+
+    if p["specs_lipsa"]:
+        avert.append(f"{p['specs_lipsa']}: Configuration și Weight sunt goale în prezentare.")
+    r = genereaza_oferta(date, intrari, p["baterie"], p["nr_baterii"], skid, p["trafo"])
+    if r["eroare_pdf"]:
+        avert.append(f"PDF-ul nu s-a putut crea: {r['eroare_pdf']}")
+    if r["ramase"]:
+        avert.append("Placeholdere rămase neînlocuite în prezentare: " + ", ".join(r["ramase"]))
+
+    alternative = [f"{o['nr']} x {o['tip']} = {nr_eu(o['putere_totala'])} MW | {bani_eu(o['pret_total'], 0)} $"
+                   for o in p["lista"] if o is not skid]
+    return {
+        "status": "ok",
+        "nume": r["nume"],
+        "pret_total_usd": bani_eu(r["rez"]["pret_ddp"]),
+        "pret_mwh_usd": bani_eu(r["rez"]["pret_mwh"]),
+        "baterie": f"{p['nr_baterii']} x {p['baterie']['tip']}",
+        "skid": f"{skid['nr']} x {skid['tip']} ({nr_eu(skid['putere_totala'])} MW, {bani_eu(skid['pret_total'], 0)} $)",
+        "alternative": alternative,
+        "avertismente": avert,
+        "fisier_pptx": cale_onedrive(r["cale_pptx"]),
+        "fisier_pdf": cale_onedrive(r["cale_pdf"]),
+        "fisier_excel": cale_onedrive(r["cale_excel"]),
+    }
+
+
+def scrie_json(cale, continut):
+    """Scrie întâi într-un fișier temporar și abia apoi îl redenumește, ca OneDrive să nu urce un fișier pe jumătate."""
+    temp = cale + ".tmp"
+    with open(temp, "w", encoding="utf-8") as f:
+        json.dump(continut, f, ensure_ascii=False, indent=2)
+    os.replace(temp, cale)
+
+
+def exporta_liste(date, baterii_map):
+    """Cereri/Liste.xlsx cu tabele Excel (Baterii, Branduri, POC) pentru meniurile din Power Apps.
+    Se rescrie doar dacă s-a schimbat conținutul."""
+    from openpyxl import Workbook
+    from openpyxl.worksheet.table import Table
+    liste = {
+        "Baterii": ("Model", list(baterii_map)),
+        "Branduri": ("Brand", ["Oricare"] + branduri_skid(date)),
+        "POC": ("kV", [nr_eu(POC_IMPLICIT_KV)] + [nr_eu(kv) for kv in tensiuni_poc(date.get("skid_poc"))
+                                                    if kv != POC_IMPLICIT_KV]),
+    }
+    semnatura = json.dumps(liste, ensure_ascii=False, sort_keys=True)
+    cale_semnatura = FISIER_LISTE + ".continut"
+    try:
+        with open(cale_semnatura, encoding="utf-8") as f:
+            if f.read() == semnatura and os.path.exists(FISIER_LISTE):
+                return
+    except OSError:
+        pass
+    wb = Workbook()
+    wb.remove(wb.active)
+    for nume, (coloana, valori) in liste.items():
+        ws = wb.create_sheet(nume)
+        ws.append([coloana])
+        for v in valori:
+            ws.append([v])
+        ws.add_table(Table(displayName=f"Tabel{nume}", ref=f"A1:A{len(valori) + 1}"))
+    temp = FISIER_LISTE + ".tmp.xlsx"
+    wb.save(temp)
+    os.replace(temp, FISIER_LISTE)
+    with open(cale_semnatura, "w", encoding="utf-8") as f:
+        f.write(semnatura)
+
+
+class Motor:
+    """Fereastră mică: verifică periodic folderul Cereri și generează ofertele cerute."""
+
+    def __init__(self, root):
+        self.root = root
+        root.title("Generator Oferte BESS - Motor")
+        root.geometry("560x260")
+        ttk.Label(root, text="Motor oferte (Power Apps)", font=("Helvetica", 14, "bold")).pack(pady=10)
+        self.lbl = ttk.Label(root, text="Pornesc...", justify="left", wraplength=520)
+        self.lbl.pack(padx=15, anchor="w")
+        self.jurnal = tk.Text(root, height=8, width=70, font=("Consolas", 9))
+        self.jurnal.pack(padx=10, pady=10, fill="both", expand=True)
+        for folder in (FOLDER_CERERI, FOLDER_REZULTATE, FOLDER_PROCESATE):
+            os.makedirs(folder, exist_ok=True)
+        self.date, self.baterii_map = None, {}
+        self.root.after(500, self.verifica)
+
+    def scrie(self, text):
+        linie = f"{datetime.now():%d.%m %H:%M:%S}  {text}"
+        self.jurnal.insert("end", linie + "\n")
+        self.jurnal.see("end")
+        try:
+            with open(os.path.join(FOLDER_CERERI, "motor_log.txt"), "a", encoding="utf-8") as f:
+                f.write(linie + "\n")
+        except OSError:
+            pass
+
+    def verifica(self):
+        try:
+            if pricing_modificat(self.date):
+                self.date = incarca_date()
+                self.baterii_map = lista_baterii(self.date["bat"])
+                exporta_liste(self.date, self.baterii_map)
+                self.scrie(f"Prețuri încărcate din {self.date['sursa']}")
+            acum = datetime.now().timestamp()
+            cereri = sorted(f for f in os.listdir(FOLDER_CERERI) if f.lower().endswith(".json"))
+            for fisier in cereri:
+                cale = os.path.join(FOLDER_CERERI, fisier)
+                if acum - os.path.getmtime(cale) >= SECUNDE_ASTEPTARE_SINCRONIZARE:
+                    self.proceseaza(cale)
+            self.lbl.config(text=f"Aștept cereri în: {os.path.abspath(FOLDER_CERERI)}\n"
+                                 f"Ultima verificare: {datetime.now():%H:%M:%S}")
+        except Exception as e:
+            self.lbl.config(text=f"Eroare: {e}")
+            self.scrie(f"EROARE: {e}")
+        self.root.after(SECUNDE_VERIFICARE * 1000, self.verifica)
+
+    def proceseaza(self, cale):
+        fisier = os.path.basename(cale)
+        id_cerere = os.path.splitext(fisier)[0]
+        cerere = {}
+        try:
+            with open(cale, encoding="utf-8-sig") as f:
+                cerere = json.load(f)
+            id_cerere = str(cerere.get("id") or id_cerere)
+            self.scrie(f"Cerere {id_cerere}: {cerere.get('client', '')} / {cerere.get('proiect', '')}")
+            self.root.update()
+            rezultat = proceseaza_cerere(self.date, self.baterii_map, cerere)
+            self.scrie(f"  gata: {rezultat['nume']}")
+        except Exception as e:
+            rezultat = {"status": "eroare", "mesaj": str(e)}
+            self.scrie(f"  EROARE: {e}")
+        rezultat.update(id=id_cerere, email=cerere.get("email", ""), client=cerere.get("client", ""),
+                        proiect=cerere.get("proiect", ""), data=datetime.now().strftime("%d.%m.%Y %H:%M"))
+        scrie_json(os.path.join(FOLDER_REZULTATE, f"{nume_fisier_valid(id_cerere)}.json"), rezultat)
+        os.replace(cale, os.path.join(FOLDER_PROCESATE, fisier))
+
+
 # Butonul albastru: pe Mac culoarea de fundal e ignorată (textul alb ar deveni invizibil) -> buton standard
 STIL_BUTON = {} if sys.platform == "darwin" else {"bg": "#0052cc", "fg": "white"}
 
@@ -1155,11 +1457,7 @@ class AplicatieOferte:
         self._afiseaza_sursa()
 
     def _branduri_skid(self):
-        """Brandurile din MV SKID + MV SKID for different POC, fără dubluri."""
-        branduri = lista_branduri(self.date["skid"])
-        if self.date.get("skid_poc") is not None:
-            branduri += [b for b in lista_branduri(self.date["skid_poc"]) if b not in branduri]
-        return branduri
+        return branduri_skid(self.date)
 
     def _valori_poc(self):
         valori = [f"{POC_IMPLICIT_KV} kV (România)"]
@@ -1234,33 +1532,18 @@ class AplicatieOferte:
                 self._afiseaza_sursa()
             date = self.date
 
-            if self.combo_baterie.get() not in self.baterii_map:
-                raise ValueError("Selectează o baterie din listă.")
-            baterie = alege_baterie(date["bat"], self.baterii_map[self.combo_baterie.get()],
-                                    self.combo_incoterm.get())
-            nr_baterii = math.ceil(intrari["mwh"] / baterie["cap"])
             nr_cerut = self.combo_nr_skid.get()
-            nr_fix = None if nr_cerut == AUTO_SKID else int(nr_cerut)
-            date_poc = dict(date, skid=skiduri_pentru_poc(date, intrari["poc_kv"]))
-            optiuni, motive = gaseste_skiduri(date_poc, intrari["mw"], nr_baterii, self.combo_brand.get(), nr_fix,
-                                              baterie_text=f"{baterie['brand']} {baterie['tip']}")
-            if not optiuni:
-                raise ValueError(mesaj_fara_skid(intrari["mw"], nr_baterii, self.combo_brand.get(), motive))
+            p = pregateste_oferta(date, self.baterii_map, intrari, self.combo_baterie.get(),
+                                  self.combo_incoterm.get(), self.combo_brand.get(),
+                                  None if nr_cerut == AUTO_SKID else int(nr_cerut), self.foloseste_aux.get())
+            baterie, nr_baterii, trafo = p["baterie"], p["nr_baterii"], p["trafo"]
+            optiuni, motive, lista, exact = p["optiuni"], p["motive"], p["lista"], p["exact"]
+            if p["specs_lipsa"] and not messagebox.askyesno(
+                    "Atenție", f"{p['specs_lipsa']}, deci Configuration și Weight vor rămâne goale "
+                               "în prezentare.\n\nContinui oricum?"):
+                self.status("Anulat.", "gray")
+                return
 
-            specs = specs_baterie(date.get("specs"), baterie["tip"])
-            if specs is None:
-                unde = "Specificatii_baterii_BESS.xlsx nu a fost găsit" if date.get("specs") is None else \
-                       f"modelul {baterie['tip']} nu e în Specificatii_baterii_BESS.xlsx"
-                if not messagebox.askyesno("Atenție", f"{unde}, deci Configuration și Weight vor rămâne goale "
-                                                      "în prezentare.\n\nContinui oricum?"):
-                    self.status("Anulat.", "gray")
-                    return
-                specs = {"model": baterie["tip"], "config": "", "weight": ""}
-            baterie["specs"] = specs
-
-            trafo = alege_trafo(date["aux"], nr_baterii, baterie["cap"]) if self.foloseste_aux.get() else None
-
-            lista, exact = filtreaza_skiduri(optiuni, intrari["mw"])
             alegere = self.dialog_previzualizare(intrari, baterie, nr_baterii, lista, trafo, exact,
                                                  raport_skiduri(optiuni, motive))
             if alegere is None:
@@ -1328,73 +1611,15 @@ class AplicatieOferte:
         return rezultat["v"]
 
     def genereaza(self, intrari, baterie, nr_baterii, skid, trafo):
-        # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2
-        intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"])
-        nume = NUME_PREZENTARE.format(nr_proiect=nume_fisier_valid(intrari["nr_proiect"]),
-                                      proiect=nume_fisier_valid(intrari["proiect"]),
-                                      mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) \
-               + f"_v{intrari['versiune']}"
-        folder = os.path.abspath(os.path.join(FOLDER_OFERTE, nume))
-        os.makedirs(folder, exist_ok=True)
-
-        self.status("Calculez în Excel...")
-        c_brand_bat = self.date["bat"].columns[BAT_COL_BRAND]
-        branduri_bat = [str(x) for x in self.date["bat"][c_brand_bat].dropna().unique() if str(x).strip()]
-        rez = calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder,
-                                  branduri_bat, self._branduri_skid())
-
-        self.status("Populez prezentarea PowerPoint...")
-        inlocuiri = {
-            "[DATA]": datetime.now().strftime(FORMAT_DATA),
-            "[CLIENT]": intrari["client"],
-            "[NUME_PROIECT]": intrari["proiect"],
-            "[NR_PROIECT]": intrari["nr_proiect"],
-            "[VERSIUNE]": str(intrari["versiune"]),
-            "[LOCATIE]": intrari["locatie"],
-            "[MWH]": nr_eu(intrari["mwh"]),
-            "[MW]": nr_eu(intrari["mw"]),
-            "[PROP_MWH]": nr_eu(nr_baterii * baterie["cap"]),
-            "[PROP_MW]": nr_eu(skid["putere_totala"]),
-            "[BAT_BRAND]": baterie["brand"],
-            "[BAT_NAME]": baterie["specs"]["model"],      # codul real (ex. Y104R04C12), nu 'REPT 5,015'
-            "[NR_BAT]": str(nr_baterii),
-            "[SKID_BRAND]": skid["brand"],
-            "[SKID]": skid["tip"],
-            "[NR_SKID]": str(skid["nr"]),
-            "[PCS_POWER]": nr_eu(skid["putere_pcs"]),                        # ex. 1,25
-            "[PRET_TOTAL_USD]": f"{bani_eu(rez['pret_ddp'])} $",
-            "[PRET_MWh_USD]": f"{bani_eu(rez['pret_mwh'])} $/MWh",
-            "[EMS_YEARLY]": f"{bani_eu(rez['ems_yearly'])} $",
-            "[INCOTERMS]": INCOTERMS[baterie["incoterm"]],
-            "[POC]": nr_eu(intrari["poc_kv"]),                                # ex. 20 (unitatea kV e în tabel)
-            "[BAT_CAP]": nr_eu(baterie["cap"]),                               # ex. 5,015
-            "[BAT_CONFIG]": baterie["specs"]["config"],
-            "[BAT_WEIGHT]": baterie["specs"]["weight"],
-            "[GAR_BAT]": baterie["garantie"],
-            "[GAR_PCS]": skid["garantie"],
-            "[EXT_GAR_BAT]": bani_eu(rez["ext_gar_bat"]),
-            "[EXT_GAR_PCS]": bani_eu(rez["ext_gar_pcs"]),
-        }
-        cale = os.path.join(folder, nume + ".pptx")
-        ramase = genereaza_pptx(inlocuiri, cale,
-                                fara_bat=fara_extensie(f"{baterie['brand']} {baterie['tip']}"),
-                                fara_pcs=fara_extensie(skid["brand"]))
-
-        self.status("Salvez și varianta PDF...")
-        eroare_pdf = None
-        try:
-            pptx_in_pdf(cale, os.path.join(folder, nume + ".pdf"))
-        except Exception as e:
-            eroare_pdf = str(e)
-
+        r = genereaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status)
         self.status("Finalizat cu succes!", "green")
-        mesaj = (f"Fișierele au fost salvate în:\n\n📂 {folder}\n\n"
-                 f"{os.path.basename(rez['cale_excel'])}\n{nume}.pptx")
-        mesaj += f"\n{nume}.pdf" if eroare_pdf is None else \
-                 f"\n\n⚠ PDF-ul nu s-a putut crea (e nevoie de PowerPoint instalat):\n{eroare_pdf}"
-        if ramase:
-            mesaj += "\n\n⚠ Placeholdere rămase neînlocuite în prezentare:\n" + ", ".join(ramase)
-        if eroare_pdf or ramase:
+        mesaj = (f"Fișierele au fost salvate în:\n\n📂 {r['folder']}\n\n"
+                 f"{os.path.basename(r['cale_excel'])}\n{r['nume']}.pptx")
+        mesaj += f"\n{r['nume']}.pdf" if r["eroare_pdf"] is None else \
+                 f"\n\n⚠ PDF-ul nu s-a putut crea (e nevoie de PowerPoint instalat):\n{r['eroare_pdf']}"
+        if r["ramase"]:
+            mesaj += "\n\n⚠ Placeholdere rămase neînlocuite în prezentare:\n" + ", ".join(r["ramase"])
+        if r["eroare_pdf"] or r["ramase"]:
             messagebox.showwarning("Gata, dar...", mesaj)
         else:
             messagebox.showinfo("Gata!", mesaj)
@@ -1403,5 +1628,6 @@ class AplicatieOferte:
 if __name__ == "__main__":
     root = tk.Tk()
     os.chdir(alege_folder_lucru())   # PCS, specificații, template-uri și 'Oferte generate' sunt în 'Ofertare BESS'
-    gui = AplicatieOferte(root)
+    # 'Generator Oferte BESS.exe --motor' (sau fișierul .py cu --motor) pornește modul motor pentru Power Apps
+    gui = Motor(root) if "--motor" in sys.argv else AplicatieOferte(root)
     root.mainloop()

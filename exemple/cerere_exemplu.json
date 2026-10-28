@@ -1,0 +1,21 @@
+{
+  "id": "test-1",
+  "email": "numele.tau@firma.ro",
+  "client": "GEP",
+  "proiect": "Proiect Test Motor",
+  "nr_proiect": "ST202610XXX",
+  "locatie": "București, România",
+  "mwh": "20",
+  "mw": "10",
+  "ems": "",
+  "eng": "0",
+  "adaos": "1.10",
+  "curs": "0.89",
+  "baterie": "JKE-5015K-2H-LAA",
+  "brand": "Oricare",
+  "nr_skiduri": "Auto",
+  "incoterm": "DDP",
+  "poc_kv": "20",
+  "trafo": "false",
+  "skid": ""
+}

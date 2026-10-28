@@ -39,3 +39,12 @@ sincronizat care se termină cu `Purchasing Prices Update_BESS`.
 | `.github/workflows/construieste.yml` | construirea automată pe GitHub |
 
 Fișierele cu prețuri (`.xlsx`, `.pptx`, `.pdf`) nu se încarcă aici (vezi `.gitignore`).
+
+## Modul motor (Power Apps / Power Automate)
+
+`Generator Oferte BESS.exe --motor` (sau `Porneste motor.bat`) pornește o fereastră mică ce verifică la 10 secunde
+folderul `Ofertare BESS/Cereri`. Fiecare cerere `.json` (scrisă de Power Automate, vezi `exemple/cerere_exemplu.json`)
+e generată ca o ofertă normală în `Oferte generate`; rezultatul se scrie în `Cereri/Rezultate/<id>.json`
+(cu căile fișierelor în OneDrive, pentru email), iar cererea e mutată în `Cereri/Procesate`.
+`Cereri/Liste.xlsx` conține tabelele `TabelBaterii`, `TabelBranduri`, `TabelPOC` pentru meniurile din Power Apps.
+Jurnal: `Cereri/motor_log.txt`.
