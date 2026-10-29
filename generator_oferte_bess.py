@@ -67,6 +67,10 @@ LINK_FOLDER_PRICING = ("https://talivaenerji-my.sharepoint.com/:f:/r/personal/le
 LINK_FOLDER_OFERTARE = ("https://talivaenerji-my.sharepoint.com/:f:/g/personal/costin_ispas_solartoday_ro/"
                         "IgDmNADThuauS7z4mdYKXlWHAQ_0slDB91z6qOyWZudqkCg?e=CL9KcT")
 DRIVE_SCOPURI = "offline_access User.Read Files.ReadWrite.All Sites.Read.All"
+# Dezactivat până când administratorul Microsoft 365 aprobă aplicația ("Approval required" la logare).
+# Până atunci: folderele sincronizate; Pricing.xlsx e copiat automat în 'Ofertare BESS' de un flux Power Automate,
+# deci e suficient să fie sincronizat doar 'Ofertare BESS'. După aprobare: DRIVE_ACTIV = True.
+DRIVE_ACTIV = False
 FORMAT_DATA = "%d/%m/%y"                    # cum apare data în prezentare (ex. 15/10/26)
 # Nr. proiect / contract: câmpul din fereastră pornește cu ST + anul și luna curentă + XXX (ex. ST202610XXX);
 # îl completezi tu (ex. ST202606109). Apare în prezentare la [NR_PROIECT] și în numele fișierului:
@@ -218,16 +222,17 @@ def alege_folder_lucru():
 
 
 def cale_pricing():
-    """Căutare automată în folderul Purchasing din OneDrive, altfel calea aleasă manual (ținută minte),
-    altfel lângă program. Cu Drive-ul conectat: copia descărcată de acolo, în folderul de lucru."""
+    """Ordinea: folderul Purchasing sincronizat (găsit automat), copia din 'Ofertare BESS' (pusă acolo de fluxul
+    Power Automate), iar la final calea aleasă manual (ținută minte). Cu Drive-ul conectat: copia descărcată de acolo."""
     if DRIVE is not None:
         return os.path.abspath(FISIER_PRICING)
-    for cale in (cauta_pricing_in_onedrive(), citeste_setari().get("pricing"), FISIER_PRICING):
+    for cale in (cauta_pricing_in_onedrive(), FISIER_PRICING, citeste_setari().get("pricing")):
         if cale and os.path.exists(cale):
             return cale
     raise PricingNegasit(
-        f"Nu găsesc {FISIER_PRICING}. Verifică dacă OneDrive rulează și dacă folderul "
-        f"'{NUME_FOLDER_PRICING}' e sincronizat pe acest PC.")
+        f"Nu găsesc {FISIER_PRICING}: nici în folderul '{NUME_FOLDER_PRICING}', nici în 'Ofertare BESS' "
+        "(unde îl copiază automat fluxul Power Automate). Verifică dacă OneDrive rulează și dacă "
+        "folderul 'Ofertare BESS' e sincronizat pe acest calculator.")
 
 
 def cale_specs():
@@ -1997,7 +2002,7 @@ class AplicatieOferte:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    if DRIVE_CLIENT_ID and "--motor" not in sys.argv:
+    if DRIVE_ACTIV and DRIVE_CLIENT_ID and "--motor" not in sys.argv:
         DRIVE = porneste_drive()      # fișierele direct din Drive (copiile locale stau în DRIVE.folder_lucru)
     # PCS, specificații, template-uri și 'Oferte generate': din Drive, altfel din folderul sincronizat 'Ofertare BESS'
     os.chdir(DRIVE.folder_lucru if DRIVE is not None else alege_folder_lucru())
