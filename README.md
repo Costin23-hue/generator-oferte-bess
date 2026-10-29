@@ -18,6 +18,19 @@ Se construiesc automat pe GitHub la fiecare modificare a codului:
 **Mac:** dezarhivează zip-ul, trage aplicația în **Applications**; prima dată **click dreapta → Open → Open**.
 La prima pornire alege folderul `Ofertare BESS` din OneDrive; macOS va cere permisiunea de a controla Excel și PowerPoint.
 
+## Lucrul direct cu Drive-ul (fără foldere sincronizate)
+
+La pornire, programul se loghează cu contul Microsoft de firmă (browser, doar prima dată; la
+„Permissions requested” → Accept) și lucrează direct cu Drive-ul, prin aplicația „Generator Oferte BESS”
+înregistrată în Entra ID (permisiuni delegate: vede doar ce vede utilizatorul logat):
+
+- descarcă `Pricing.xlsx` din folderul Purchasing și restul fișierelor din `Ofertare BESS`
+  (doar dacă s-au schimbat) într-un folder local de lucru (`Drive cache`);
+- generează oferta local (Excel + PowerPoint) și o urcă în `Ofertare BESS/Oferte generate/<nume>`.
+
+Setările sunt în `CONFIGURARE` (`DRIVE_CLIENT_ID`, `DRIVE_TENANT_ID`, `LINK_FOLDER_PRICING`, `LINK_FOLDER_OFERTARE`).
+Dacă Drive-ul nu e disponibil, programul poate continua cu folderele sincronizate (ca înainte).
+
 ## Ce trebuie să fie în `Ofertare BESS`
 
 - `PCS - MV skid.xlsx`

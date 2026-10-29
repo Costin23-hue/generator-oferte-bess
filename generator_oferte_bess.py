@@ -1,13 +1,22 @@
+import base64
+import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tkinter as tk
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from tkinter import ttk, messagebox, filedialog
 
 import pandas as pd
@@ -46,6 +55,18 @@ FISIER_SETARI = os.path.join(_FOLDER_SETARI, "Ofertare BESS", "setari.json")
 
 FISIER_SPECS = "Specificatii_baterii_BESS.xlsx"   # coloane: Producător / Produs | Model | Configuration | Weight
 FISIER_PCS = "PCS - MV skid.xlsx"
+
+# Lucrul direct cu Drive-ul (Microsoft Graph), fără foldere sincronizate: fiecare utilizator se loghează
+# o dată cu contul de firmă; fișierele se descarcă din cele două foldere, iar ofertele se urcă în
+# 'Ofertare BESS/Oferte generate'. Aplicația 'Generator Oferte BESS' e înregistrată în Entra ID
+# (permisiuni delegate: vede doar ce vede utilizatorul logat). DRIVE_CLIENT_ID gol = doar foldere sincronizate.
+DRIVE_CLIENT_ID = "3adacc30-a1fa-4556-bda2-2c0a0bd415e7"
+DRIVE_TENANT_ID = "0ccbdc57-de92-4033-bd5d-a02a0032aee0"
+LINK_FOLDER_PRICING = ("https://talivaenerji-my.sharepoint.com/:f:/r/personal/levon_solartoday_com_tr/Documents/"
+                       "Purchasing%20Prices%20Update_BESS?d=wfb3649798b8c4fe9a0b73c1983d9a28a&csf=1&web=1&e=r1gLmf")
+LINK_FOLDER_OFERTARE = ("https://talivaenerji-my.sharepoint.com/:f:/g/personal/costin_ispas_solartoday_ro/"
+                        "IgDmNADThuauS7z4mdYKXlWHAQ_0slDB91z6qOyWZudqkCg?e=CL9KcT")
+DRIVE_SCOPURI = "offline_access User.Read Files.ReadWrite.All Sites.Read.All"
 FORMAT_DATA = "%d/%m/%y"                    # cum apare data în prezentare (ex. 15/10/26)
 # Nr. proiect / contract: câmpul din fereastră pornește cu ST + anul și luna curentă + XXX (ex. ST202610XXX);
 # îl completezi tu (ex. ST202606109). Apare în prezentare la [NR_PROIECT] și în numele fișierului:
@@ -198,7 +219,9 @@ def alege_folder_lucru():
 
 def cale_pricing():
     """Căutare automată în folderul Purchasing din OneDrive, altfel calea aleasă manual (ținută minte),
-    altfel lângă program."""
+    altfel lângă program. Cu Drive-ul conectat: copia descărcată de acolo, în folderul de lucru."""
+    if DRIVE is not None:
+        return os.path.abspath(FISIER_PRICING)
     for cale in (cauta_pricing_in_onedrive(), citeste_setari().get("pricing"), FISIER_PRICING):
         if cale and os.path.exists(cale):
             return cale
@@ -915,23 +938,26 @@ def _seteaza_data_fixa(p, data_text):
             r.text = ""
 
 
-def urmatoarea_versiune(nr_proiect, proiect):
+def urmatoarea_versiune(nr_proiect, proiect, nume_existente=()):
     """Caută ofertele deja generate pentru același nr. proiect + proiect (folderele din FOLDER_OFERTE și,
-    pentru ofertele mai vechi, cele de lângă program) și returnează următoarea versiune (1 dacă nu e niciuna)."""
+    pentru ofertele mai vechi, cele de lângă program; nume_existente = folderele din Drive) și returnează
+    următoarea versiune (1 dacă nu e niciuna)."""
     model = re.compile(re.escape(f"{nume_fisier_valid(nr_proiect)}_BESS_Indicative_Proposal_Taliva_"
                                  f"{nume_fisier_valid(proiect)}_") + r".*_v(\d+)(\.pptx)?$", re.I)
     maxim = 0
     foldere = [os.path.join(radacina, f) for radacina in (FOLDER_OFERTE, ".") if os.path.isdir(radacina)
                for f in os.listdir(radacina)]
+    nume_gasite = list(nume_existente)
     for folder in filter(os.path.isdir, foldere):
         try:
             continut = os.listdir(folder)
         except OSError:
             continut = []
-        for nume in [os.path.basename(folder)] + continut:
-            m = model.match(nume)
-            if m:
-                maxim = max(maxim, int(m.group(1)))
+        nume_gasite += [os.path.basename(folder)] + continut
+    for nume in nume_gasite:
+        m = model.match(nume)
+        if m:
+            maxim = max(maxim, int(m.group(1)))
     return maxim + 1
 
 
@@ -1048,6 +1074,292 @@ def genereaza_pptx(inlocuiri, cale_final, fara_bat=False, fara_pcs=False):
 # INTERFAȚĂ
 # ======================================================================
 # ======================================================================
+# DRIVE (Microsoft Graph): fișierele direct din OneDrive/SharePoint, fără sincronizare
+# ======================================================================
+DRIVE = None          # DriveCloud conectat, sau None = se lucrează cu folderele sincronizate
+
+
+class EroareDrive(Exception):
+    pass
+
+
+class NegasitDrive(EroareDrive):
+    pass
+
+
+def _cale_url(text):
+    return urllib.parse.quote(text, safe="/")
+
+
+def _mesaj_http(eroare):
+    try:
+        corp = json.loads(eroare.read().decode("utf-8", "replace"))
+        return corp.get("error_description") or corp.get("error", {}).get("message") or str(eroare)
+    except Exception:
+        return str(eroare)
+
+
+class DriveCloud:
+    """Logare Microsoft (cod + PKCE, browser) și operații pe fișiere prin Microsoft Graph.
+    Doar biblioteci standard Python, fără pachete suplimentare."""
+    GRAPH = "https://graph.microsoft.com/v1.0"
+
+    def __init__(self):
+        folder = os.path.dirname(FISIER_SETARI)
+        self.fisier_token = os.path.join(folder, "token_drive.json")
+        self.folder_lucru = os.path.join(folder, "Drive cache")       # copiile locale = folderul de lucru
+        self.fisier_stare = os.path.join(self.folder_lucru, "drive_stare.json")
+        self.token = self._citeste_json(self.fisier_token)
+        self.pricing = self.ofertare = None                            # (drive_id, item_id) ale celor 2 foldere
+        self.cont = {}
+        self.pricing_modificat_la = None
+
+    @staticmethod
+    def _citeste_json(cale):
+        try:
+            with open(cale, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    # ---------------- logare ----------------
+    def are_logare(self):
+        return bool(self.token.get("refresh_token"))
+
+    def _cere_token(self, campuri):
+        date = urllib.parse.urlencode(dict(campuri, client_id=DRIVE_CLIENT_ID, scope=DRIVE_SCOPURI)).encode()
+        cerere = urllib.request.Request(
+            f"https://login.microsoftonline.com/{DRIVE_TENANT_ID}/oauth2/v2.0/token", data=date)
+        try:
+            with urllib.request.urlopen(cerere, timeout=60) as r:
+                raspuns = json.load(r)
+        except urllib.error.HTTPError as e:
+            raise EroareDrive(f"Logarea Microsoft a eșuat: {_mesaj_http(e)}")
+        raspuns["expira"] = time.time() + int(raspuns.get("expires_in", 3600)) - 120
+        raspuns.setdefault("refresh_token", self.token.get("refresh_token"))
+        self.token = raspuns
+        os.makedirs(os.path.dirname(self.fisier_token), exist_ok=True)
+        with open(self.fisier_token, "w", encoding="utf-8") as f:
+            json.dump(raspuns, f)
+
+    def logare(self):
+        """Deschide browserul pentru logare și primește răspunsul pe http://localhost:<port>."""
+        verificator = secrets.token_urlsafe(64)
+        provocare = base64.urlsafe_b64encode(hashlib.sha256(verificator.encode()).digest()).decode().rstrip("=")
+        stare = secrets.token_urlsafe(16)
+        primit = {}
+
+        class Raspuns(BaseHTTPRequestHandler):
+            def do_GET(h):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
+                if "code" in q or "error" in q:
+                    primit.update({k: v[0] for k, v in q.items()})
+                h.send_response(200)
+                h.send_header("Content-Type", "text/html; charset=utf-8")
+                h.end_headers()
+                h.wfile.write("<h3>Logare terminată. Poți închide această fereastră și reveni în "
+                              "Generator Oferte BESS.</h3>".encode("utf-8"))
+
+            def log_message(h, *argumente):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Raspuns)
+        server.timeout = 1
+        redirect = f"http://localhost:{server.server_address[1]}"
+        webbrowser.open(f"https://login.microsoftonline.com/{DRIVE_TENANT_ID}/oauth2/v2.0/authorize?" +
+                        urllib.parse.urlencode({
+                            "client_id": DRIVE_CLIENT_ID, "response_type": "code", "redirect_uri": redirect,
+                            "response_mode": "query", "scope": DRIVE_SCOPURI, "state": stare,
+                            "code_challenge": provocare, "code_challenge_method": "S256",
+                            "prompt": "select_account"}))
+        sfarsit = time.time() + 300
+        try:
+            while not primit and time.time() < sfarsit:
+                server.handle_request()
+        finally:
+            server.server_close()
+        if "code" not in primit:
+            raise EroareDrive(primit.get("error_description") or "Logarea nu s-a terminat (anulată sau timp expirat).")
+        if primit.get("state") != stare:
+            raise EroareDrive("Răspuns de logare invalid.")
+        self._cere_token({"grant_type": "authorization_code", "code": primit["code"],
+                          "redirect_uri": redirect, "code_verifier": verificator})
+
+    def _token_acces(self):
+        if self.token.get("access_token") and time.time() < self.token.get("expira", 0):
+            return self.token["access_token"]
+        if self.token.get("refresh_token"):
+            try:
+                self._cere_token({"grant_type": "refresh_token", "refresh_token": self.token["refresh_token"]})
+                return self.token["access_token"]
+            except EroareDrive:
+                pass                                    # logarea a expirat -> din nou în browser
+        self.logare()
+        return self.token["access_token"]
+
+    # ---------------- cereri Graph ----------------
+    def _cerere(self, metoda, cale, date=None, tip=None, absolut=False, autentificare=True, brut=False, antete=None):
+        antete = dict(antete or {})
+        if autentificare:
+            antete["Authorization"] = "Bearer " + self._token_acces()
+        if tip:
+            antete["Content-Type"] = tip
+        cerere = urllib.request.Request(cale if absolut else self.GRAPH + cale, data=date, method=metoda,
+                                        headers=antete)
+        try:
+            with urllib.request.urlopen(cerere, timeout=300) as r:
+                continut = r.read()
+        except urllib.error.HTTPError as e:
+            clasa = NegasitDrive if e.code == 404 else EroareDrive
+            raise clasa(f"Drive ({e.code}): {_mesaj_http(e)}")
+        except urllib.error.URLError as e:
+            raise EroareDrive(f"Nu mă pot conecta la Microsoft (internet?): {e.reason}")
+        if brut:
+            return continut
+        return json.loads(continut) if continut else {}
+
+    def _folder_din_link(self, link):
+        """(drive_id, item_id) pentru un link de folder din SharePoint/OneDrive."""
+        cod = "u!" + base64.urlsafe_b64encode(link.encode()).decode().rstrip("=")
+        try:
+            j = self._cerere("GET", f"/shares/{cod}/driveItem")
+            return j["parentReference"]["driveId"], j["id"]
+        except EroareDrive:
+            pass
+        # link direct (.../:f:/r/personal/<site>/Documents/<folder>): site personal + cale
+        u = urllib.parse.urlparse(link)
+        parti = [urllib.parse.unquote(p) for p in u.path.split("/") if p]
+        if "r" in parti:
+            parti = parti[parti.index("r") + 1:]
+        drive = self._cerere("GET", f"/sites/{u.netloc}:/{_cale_url('/'.join(parti[:2]))}:/drive")
+        j = self._cerere("GET", f"/drives/{drive['id']}/root:/{_cale_url('/'.join(parti[3:]))}")
+        return drive["id"], j["id"]
+
+    def _copii(self, folder, subcale=""):
+        drive_id, item_id = folder
+        cale = (f"/drives/{drive_id}/items/{item_id}" + (f":/{_cale_url(subcale)}:" if subcale else "") +
+                "/children?$top=999")
+        elemente, absolut = [], False
+        while cale:
+            j = self._cerere("GET", cale, absolut=absolut)
+            elemente += j.get("value", [])
+            cale, absolut = j.get("@odata.nextLink"), True
+        return elemente
+
+    def _descarca(self, drive_id, item_id, destinatie):
+        info = self._cerere("GET", f"/drives/{drive_id}/items/{item_id}")
+        continut = self._cerere("GET", info["@microsoft.graph.downloadUrl"], absolut=True,
+                                autentificare=False, brut=True)
+        with open(destinatie + ".tmp", "wb") as f:
+            f.write(continut)
+        os.replace(destinatie + ".tmp", destinatie)
+
+    def _asigura_folder(self, drive_id, parinte_id, nume):
+        """ID-ul subfolderului 'nume' (îl creează dacă nu există)."""
+        try:
+            j = self._cerere("POST", f"/drives/{drive_id}/items/{parinte_id}/children", tip="application/json",
+                             date=json.dumps({"name": nume, "folder": {},
+                                              "@microsoft.graph.conflictBehavior": "fail"}).encode())
+            return j["id"]
+        except NegasitDrive:
+            raise
+        except EroareDrive:                                  # există deja (409)
+            return self._cerere("GET", f"/drives/{drive_id}/items/{parinte_id}:/{_cale_url(nume)}")["id"]
+
+    def _urca(self, drive_id, parinte_id, nume, cale_fisier):
+        with open(cale_fisier, "rb") as f:
+            date = f.read()
+        tinta = f"/drives/{drive_id}/items/{parinte_id}:/{_cale_url(nume)}:"
+        if len(date) < 4 * 1024 * 1024:
+            self._cerere("PUT", tinta + "/content", date=date, tip="application/octet-stream")
+            return
+        sesiune = self._cerere("POST", tinta + "/createUploadSession", tip="application/json",
+                               date=json.dumps({"item": {"@microsoft.graph.conflictBehavior": "replace"}}).encode())
+        bucata = 320 * 1024 * 16                              # multiplu de 320 KiB, cum cere Graph
+        for start in range(0, len(date), bucata):
+            parte = date[start:start + bucata]
+            self._cerere("PUT", sesiune["uploadUrl"], date=parte, absolut=True, autentificare=False, brut=True,
+                         antete={"Content-Range": f"bytes {start}-{start + len(parte) - 1}/{len(date)}"})
+
+    # ---------------- folosite de program ----------------
+    def conecteaza(self):
+        os.makedirs(self.folder_lucru, exist_ok=True)
+        self.cont = self._cerere("GET", "/me?$select=displayName,mail,userPrincipalName")
+        self.pricing = self._folder_din_link(LINK_FOLDER_PRICING)
+        self.ofertare = self._folder_din_link(LINK_FOLDER_OFERTARE)
+        self.actualizeaza()
+
+    def actualizeaza(self):
+        """Descarcă în folderul de lucru fișierele care s-au schimbat în Drive. Returnează numele lor."""
+        stare = self._citeste_json(self.fisier_stare)
+        de_luat = [(self.pricing, FISIER_PRICING)] + [(self.ofertare, f) for f in
+                                                      (FISIER_PCS, FISIER_SPECS, FISIER_EXCEL_TEMPLATE,
+                                                       FISIER_PPT_TEMPLATE)]
+        listari, actualizate = {}, []
+        for folder, nume in de_luat:
+            if folder not in listari:
+                listari[folder] = {c["name"].lower(): c for c in self._copii(folder) if "file" in c}
+            element = listari[folder].get(nume.lower())
+            if element is None:
+                unde = "Purchasing Prices Update_BESS" if folder == self.pricing else "Ofertare BESS"
+                raise EroareDrive(f"Nu găsesc '{nume}' în folderul '{unde}' din Drive.")
+            destinatie = os.path.join(self.folder_lucru, nume)
+            if stare.get(nume) != element.get("eTag") or not os.path.exists(destinatie):
+                self._descarca(folder[0], element["id"], destinatie)
+                stare[nume] = element.get("eTag")
+                actualizate.append(nume)
+            if nume == FISIER_PRICING:
+                self.pricing_modificat_la = element.get("lastModifiedDateTime")
+        with open(self.fisier_stare, "w", encoding="utf-8") as f:
+            json.dump(stare, f)
+        return actualizate
+
+    def nume_oferte(self):
+        """Numele folderelor din 'Ofertare BESS/Oferte generate' (pentru numerotarea versiunilor)."""
+        try:
+            return [c["name"] for c in self._copii(self.ofertare, FOLDER_OFERTE)]
+        except NegasitDrive:
+            return []
+
+    def urca_oferta(self, folder_local):
+        """Urcă fișierele ofertei în 'Ofertare BESS/Oferte generate/<nume>'. Returnează linkul folderului."""
+        drive_id, item_id = self.ofertare
+        id_oferte = self._asigura_folder(drive_id, item_id, FOLDER_OFERTE)
+        id_oferta = self._asigura_folder(drive_id, id_oferte, os.path.basename(folder_local))
+        for fisier in sorted(os.listdir(folder_local)):
+            cale = os.path.join(folder_local, fisier)
+            if os.path.isfile(cale):
+                self._urca(drive_id, id_oferta, fisier, cale)
+        return self._cerere("GET", f"/drives/{drive_id}/items/{id_oferta}").get("webUrl")
+
+    def descriere_sursa(self):
+        cand = ""
+        if self.pricing_modificat_la:
+            moment = datetime.fromisoformat(self.pricing_modificat_la.replace("Z", "+00:00")).astimezone()
+            cand = f"\n(modificat ultima dată: {moment:%d/%m/%y %H:%M})"
+        cont = self.cont.get("mail") or self.cont.get("userPrincipalName", "")
+        return f"Prețuri din Drive: Purchasing Prices Update_BESS / {FISIER_PRICING}{cand}\nCont: {cont}"
+
+
+def porneste_drive():
+    """Conectarea la Drive la pornire. None = utilizatorul a ales folderele sincronizate."""
+    drive = DriveCloud()
+    try:
+        if not drive.are_logare():
+            messagebox.showinfo("Logare Microsoft",
+                                "Se deschide browserul pentru logarea cu contul de firmă (doar prima dată).\n\n"
+                                "La 'Permissions requested' apasă Accept.")
+        drive.conecteaza()
+        return drive
+    except Exception as e:
+        if messagebox.askyesno("Drive indisponibil",
+                               f"Nu m-am putut conecta la Drive:\n{e}\n\n"
+                               "Continui cu folderele sincronizate pe acest calculator?"):
+            return None
+        sys.exit(1)
+
+
+# ======================================================================
 # PREGĂTIRE ȘI GENERARE (comune pentru fereastră și pentru modul motor)
 # ======================================================================
 def branduri_skid(date):
@@ -1084,10 +1396,10 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
             "lista": lista, "exact": exact, "trafo": trafo, "specs_lipsa": specs_lipsa}
 
 
-def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None):
+def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=()):
     """Calculul în Excel + prezentarea PPTX + PDF, în 'Oferte generate/<nume>_vN'. Returnează căile fișierelor."""
     # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2
-    intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"])
+    intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"], nume_existente)
     nume = NUME_PREZENTARE.format(nr_proiect=nume_fisier_valid(intrari["nr_proiect"]),
                                   proiect=nume_fisier_valid(intrari["proiect"]),
                                   mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) \
@@ -1501,7 +1813,9 @@ class AplicatieOferte:
         return valori
 
     def _afiseaza_sursa(self):
-        if self.date:
+        if DRIVE is not None:
+            self.lbl_sursa.config(text=DRIVE.descriere_sursa())
+        elif self.date:
             ora = datetime.fromtimestamp(self.date["mtime"]).strftime("%d/%m/%y %H:%M")
             self.lbl_sursa.config(text=f"Prețuri din: {self.date['sursa']}\n(modificat ultima dată: {ora})\n"
                                        f"Folder de lucru: {os.getcwd()}")
@@ -1556,6 +1870,11 @@ class AplicatieOferte:
                 self.status("Anulat.", "gray")
                 return
 
+            # Cu Drive-ul conectat: descărcăm fișierele schimbate (și atunci recitim tot)
+            if DRIVE is not None:
+                self.status("Verific fișierele din Drive...")
+                if DRIVE.actualizeaza():
+                    self.date = None
             # Recitim Pricing.xlsx doar dacă s-a modificat în Drive de la ultima citire
             if pricing_modificat(self.date):
                 self.status("Pricing.xlsx s-a modificat, îl recitesc...")
@@ -1646,15 +1965,31 @@ class AplicatieOferte:
         return rezultat["v"]
 
     def genereaza(self, intrari, baterie, nr_baterii, skid, trafo):
-        r = genereaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status)
+        r = genereaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status,
+                             nume_existente=DRIVE.nume_oferte() if DRIVE is not None else ())
+        link_drive, eroare_drive = None, None
+        if DRIVE is not None:
+            self.status("Urc oferta în Drive...")
+            try:
+                link_drive = DRIVE.urca_oferta(r["folder"])
+            except Exception as e:
+                eroare_drive = str(e)
         self.status("Finalizat cu succes!", "green")
-        mesaj = (f"Fișierele au fost salvate în:\n\n📂 {r['folder']}\n\n"
-                 f"{os.path.basename(r['cale_excel'])}\n{r['nume']}.pptx")
+        if DRIVE is not None and eroare_drive is None:
+            mesaj = f"Oferta a fost urcată în Drive:\n\n📂 Ofertare BESS / {FOLDER_OFERTE} / {r['nume']}\n\n"
+        else:
+            mesaj = f"Fișierele au fost salvate în:\n\n📂 {r['folder']}\n\n"
+            if eroare_drive:
+                mesaj = f"⚠ Oferta NU a putut fi urcată în Drive:\n{eroare_drive}\n\n" + mesaj
+        mesaj += f"{os.path.basename(r['cale_excel'])}\n{r['nume']}.pptx"
         mesaj += f"\n{r['nume']}.pdf" if r["eroare_pdf"] is None else \
                  f"\n\n⚠ PDF-ul nu s-a putut crea (e nevoie de PowerPoint instalat):\n{r['eroare_pdf']}"
         if r["ramase"]:
             mesaj += "\n\n⚠ Placeholdere rămase neînlocuite în prezentare:\n" + ", ".join(r["ramase"])
-        if r["eroare_pdf"] or r["ramase"]:
+        if link_drive:
+            if messagebox.askyesno("Gata!", mesaj + "\n\nDeschid folderul ofertei în browser?"):
+                webbrowser.open(link_drive)
+        elif r["eroare_pdf"] or r["ramase"] or eroare_drive:
             messagebox.showwarning("Gata, dar...", mesaj)
         else:
             messagebox.showinfo("Gata!", mesaj)
@@ -1662,7 +1997,10 @@ class AplicatieOferte:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    os.chdir(alege_folder_lucru())   # PCS, specificații, template-uri și 'Oferte generate' sunt în 'Ofertare BESS'
+    if DRIVE_CLIENT_ID and "--motor" not in sys.argv:
+        DRIVE = porneste_drive()      # fișierele direct din Drive (copiile locale stau în DRIVE.folder_lucru)
+    # PCS, specificații, template-uri și 'Oferte generate': din Drive, altfel din folderul sincronizat 'Ofertare BESS'
+    os.chdir(DRIVE.folder_lucru if DRIVE is not None else alege_folder_lucru())
     # 'Generator Oferte BESS.exe --motor' (sau fișierul .py cu --motor) pornește modul motor pentru Power Apps
     gui = Motor(root) if "--motor" in sys.argv else AplicatieOferte(root)
     root.mainloop()
