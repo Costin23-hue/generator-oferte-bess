@@ -67,10 +67,9 @@ LINK_FOLDER_PRICING = ("https://talivaenerji-my.sharepoint.com/:f:/r/personal/le
 LINK_FOLDER_OFERTARE = ("https://talivaenerji-my.sharepoint.com/:f:/g/personal/costin_ispas_solartoday_ro/"
                         "IgDmNADThuauS7z4mdYKXlWHAQ_0slDB91z6qOyWZudqkCg?e=CL9KcT")
 DRIVE_SCOPURI = "offline_access User.Read Files.ReadWrite.All Sites.Read.All"
-# Dezactivat până când administratorul Microsoft 365 aprobă aplicația ("Approval required" la logare).
-# Până atunci: folderele sincronizate; Pricing.xlsx e copiat automat în 'Ofertare BESS' de un flux Power Automate,
-# deci e suficient să fie sincronizat doar 'Ofertare BESS'. După aprobare: DRIVE_ACTIV = True.
-DRIVE_ACTIV = False
+# Aplicația a fost aprobată de administratorul Microsoft 365 (29.10.2026). Cu DRIVE_ACTIV = False programul
+# lucrează doar cu folderele sincronizate (Pricing.xlsx e copiat oricum în 'Ofertare BESS' de fluxul Power Automate).
+DRIVE_ACTIV = True
 FORMAT_DATA = "%d/%m/%y"                    # cum apare data în prezentare (ex. 15/10/26)
 # Nr. proiect / contract: câmpul din fereastră pornește cu ST + anul și luna curentă + XXX (ex. ST202610XXX);
 # îl completezi tu (ex. ST202606109). Apare în prezentare la [NR_PROIECT] și în numele fișierului:
