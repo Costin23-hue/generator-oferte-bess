@@ -1499,6 +1499,9 @@ def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lam
         "[NR_BAT]": str(nr_baterii),
         "[SKID_BRAND]": skid["brand"],
         "[SKID]": skid["tip"],
+        # trafo aux extern lângă numele skidului (gol dacă nu e nevoie): ' + Aux transformer 400 kVA'
+        "[SKID_AUX]": (f" + {'' if trafo['cant'] == 1 else str(trafo['cant']) + ' x '}Aux transformer "
+                       f"{nr_eu(trafo['kva'])} kVA") if trafo else "",
         "[NR_SKID]": str(skid["nr"]),
         "[PCS_POWER]": nr_eu(skid["putere_pcs"]),                        # ex. 1,25
         "[PRET_TOTAL_USD]": f"{bani_eu(rez['pret_ddp'])} $",
