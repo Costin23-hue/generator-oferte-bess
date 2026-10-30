@@ -144,6 +144,28 @@ INCOTERMS = {
 INCOTERM_IMPLICIT = "DDP"
 AUTO_SKID = "Auto (cel mai ieftin)"
 
+# Componente introduse manual (tab-ul "Componente manuale"), pentru cotații care nu sunt (încă) în Pricing.
+# Se pot combina liber cu cele din baza de date. (cheie, etichetă, valoare implicită); cheie None = titlu de grup,
+# cheie '..._inclus' = bifă.
+OPTIUNE_MANUALA_BATERIE = "✎ Baterie manuală (tab Componente manuale)"
+OPTIUNE_MANUALA_SKID = "✎ Skid manual (tab Componente manuale)"
+CAMPURI_BATERIE_MANUALA = [
+    ("brand", "Brand / furnizor:", ""), ("model", "Model:", ""), ("cap", "Capacitate / baterie (MWh):", ""),
+    ("pret_ddp", "Preț DDP ($/MWh):", ""), ("pret_dap", "Preț DAP ($/MWh):", ""),
+    ("transport", "Transport / container ($):", ""), ("transport_inclus", "Prețul include transportul", None),
+    ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty ($/MWh/an, opțional):", ""),
+    ("kva_aux", "Consum aux / baterie (kVA, gol = automat):", ""),
+    (None, "Specificații pentru prezentare", None),
+    ("model_cod", "Cod model (rândul Model):", ""), ("config", "Configuration:", ""), ("weight", "Weight (t):", ""),
+]
+CAMPURI_SKID_MANUAL = [
+    ("brand", "Brand / furnizor:", ""), ("model", "Model:", ""), ("putere", "Putere / skid (MW):", ""),
+    ("putere_pcs", "Putere PCS (MW):", ""), ("pret", "Preț / skid ($):", ""),
+    ("transport", "Transport / skid ($):", ""), ("transport_inclus", "Prețul include transportul", None),
+    ("com", "Commissioning / skid ($):", ""), ("aux_kva", "Trafo aux inclus în skid (kVA, gol = fără):", ""),
+    ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty ($/MWh/an, opțional):", ""),
+]
+
 # Indecși de coloană (0 = A) în foile din Pricing.xlsx
 BAT_COL_DATA, BAT_COL_BRAND, BAT_COL_TYPE, BAT_COL_CAP, BAT_COL_PRET, BAT_COL_TRANSPORT = 0, 2, 3, 4, 8, 9
 BAT_COL_PRET_DAP = 7                     # coloana H = 'Price / MWh ... with taxes (DAP)'
@@ -669,15 +691,7 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
             "putere_pcs": numar(skid.get("PCS power")),                         # din PCS - MV skid.xlsx
             "garantie": text_ani(skid.get(c_gar)) if c_gar else "",            # coloana M
         })
-        o = optiuni[-1]
-        o["aux_skid"] = aux_inclus_skid(skid, nume)
-        o["kva_necesar"] = nr_baterii * kva_baterie + nr_skiduri * KVA_CONSUM_SKID
-        o["kva_acoperit"] = nr_skiduri * o["aux_skid"]
-        o["kva_lipsa"] = max(0.0, o["kva_necesar"] - o["kva_acoperit"])
-        o["kva_trafo"] = o["kva_necesar"] if forteaza_trafo and o["kva_lipsa"] == 0 else o["kva_lipsa"]
-        o["trafo"] = alege_trafo(trafo_pricing, o["kva_trafo"])
-        o["trafo_lipsa_din_pricing"] = o["kva_trafo"] > 0 and o["trafo"] is None
-        o["cost_total"] = o["pret_total"] + (o["trafo"]["cost"] if o["trafo"] else 0)
+        calcul_aux(optiuni[-1], aux_inclus_skid(skid, nume), nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing)
 
     optiuni.sort(key=lambda o: o["cost_total"])
     return optiuni, motive
@@ -688,6 +702,18 @@ def filtreaza_skiduri(optiuni, mw):
     Returnează (lista, exista_exact)."""
     exact = any(abs(o["putere_totala"] - mw) < 0.01 for o in optiuni)
     return optiuni[:NR_OPTIUNI_SKID], exact
+
+
+def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing):
+    """Completează opțiunea de skid cu necesarul aux, ce acoperă skidul, trafo-ul extern și costul total."""
+    o["aux_skid"] = aux_skid
+    o["kva_necesar"] = nr_baterii * kva_baterie + o["nr"] * KVA_CONSUM_SKID
+    o["kva_acoperit"] = o["nr"] * aux_skid
+    o["kva_lipsa"] = max(0.0, o["kva_necesar"] - o["kva_acoperit"])
+    o["kva_trafo"] = o["kva_necesar"] if forteaza_trafo and o["kva_lipsa"] == 0 else o["kva_lipsa"]
+    o["trafo"] = alege_trafo(trafo_pricing, o["kva_trafo"])
+    o["trafo_lipsa_din_pricing"] = o["kva_trafo"] > 0 and o["trafo"] is None
+    o["cost_total"] = o["pret_total"] + (o["trafo"]["cost"] if o["trafo"] else 0)
 
 
 def text_aux(o):
@@ -710,6 +736,10 @@ def descriere_skid(o, mw=None):
         marcaj = "  ✓ putere exactă" if abs(o["putere_totala"] - mw) < 0.01 else "  (putere mai mare decât cerută)"
     pret = (f"skid {o['pret_total']:,.0f} $ + trafo {o['trafo']['cost']:,.0f} $ = {o['cost_total']:,.0f} $"
             if o.get("trafo") else f"{o['pret_total']:,.0f} $")
+    if o.get("manual"):
+        return (f"{nume}: {o['nr']} buc x {o['putere_unit']:g} MW = {o['putere_totala']:g} MW | {pret}{marcaj}"
+                f"\n    ✎ skid introdus manual - compatibilitatea cu bateriile NU e verificată de program"
+                f"\n    {text_aux(o)}")
     return (f"{nume}: {o['nr']} buc x {o['putere_unit']:g} MW = {o['putere_totala']:g} MW | {pret}{marcaj}"
             f"\n    intrări DC: {o['intrari']:g} (acceptă {o['acceptate']})"
             + (f" | {o['conexiune']}" if o.get("conexiune") else "")
@@ -906,7 +936,7 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
         sh.range("B7").value = trafo["kva"] if trafo else None   # puterea trafo-ului ales (kVA)
         sh.range("D7").value = trafo["pret"] if trafo else 0
         sh.range("B17").value = 1 if trafo else 0
-        sh.range("B18").value = kva_aux_baterie(baterie["cap"])
+        sh.range("B18").value = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
         sh.range("A19:B19").value = [["kVA de acoperit cu trafo extern", skid.get("kva_trafo", 0)]]
         sh.range("D17:E20").value = [["Necesar aux total (kVA)", skid.get("kva_necesar", 0)],
                                      ["  din care consum skiduri (kVA)", skid["nr"] * KVA_CONSUM_SKID],
@@ -1439,20 +1469,106 @@ def branduri_skid(date):
     return branduri
 
 
-def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand, nr_fix, cu_trafo):
-    """Alege bateria, skidurile compatibile (de la cel mai ieftin) și trafo-ul. Nu generează fișiere."""
-    if model_baterie not in baterii_map:
+def _valoare_manuala(m, cheie, eticheta, implicit=None, bani=False):
+    """Număr dintr-un câmp manual; gol -> implicit (sau eroare dacă implicit e None).
+    bani=True: punctul e separator de mii ('75.000' = 75000, '1.250,50' = 1250.5);
+    altfel punctul și virgula sunt zecimale ('5.015' = '5,015' = 5.015 MWh)."""
+    text = str(m.get(cheie, "")).strip()
+    if not text:
+        if implicit is None:
+            raise ValueError(f"Completează câmpul '{eticheta}' în tab-ul Componente manuale.")
+        return implicit
+    text = text.replace(" ", "").replace("$", "")
+    if ("," in text and "." in text) or (bani and re.fullmatch(r"\d{1,3}(\.\d{3})+", text)):
+        text = text.replace(".", "").replace(",", ".")      # 1.234,56 / 75.000 (bani) -> 1234.56 / 75000
+    try:
+        return float(text.replace(",", "."))
+    except ValueError:
+        raise ValueError(f"Câmpul '{eticheta}' din Componente manuale nu e un număr: {m.get(cheie)}")
+
+
+def _text_garantie(text):
+    text = str(text or "").strip()
+    try:
+        return text_ani(float(text.replace(",", ".")))           # 5 -> '5 years'
+    except ValueError:
+        return text
+
+
+def baterie_manuala(m, incoterm):
+    """Bateria din tab-ul Componente manuale, cu aceleași chei ca alege_baterie()."""
+    if not str(m.get("brand", "")).strip() or not str(m.get("model", "")).strip():
+        raise ValueError("Completează brandul și modelul bateriei manuale.")
+    cap = _valoare_manuala(m, "cap", "Capacitate / baterie (MWh)")
+    if cap <= 0:
+        raise ValueError("Capacitatea bateriei manuale trebuie să fie pozitivă.")
+    pret = _valoare_manuala(m, "pret_ddp" if incoterm == "DDP" else "pret_dap", f"Preț {incoterm} ($/MWh)", bani=True)
+    greutate = str(m.get("weight", "")).strip()
+    try:
+        greutate = f"~ {float(greutate.replace(',', '.')):g}".replace(".", ",") if greutate else ""
+    except ValueError:
+        pass
+    return {
+        "tip": m["model"].strip(), "brand": m["brand"].strip(), "cap": cap, "pret": pret, "incoterm": incoterm,
+        "coloana_pret": "manual", "data": "introdus manual", "rand_excel": "-",
+        "transport": 0.0 if m.get("transport_inclus") else _valoare_manuala(m, "transport", "Transport", 0.0, True),
+        "garantie": _text_garantie(m.get("garantie")),
+        "manual": True, "ext_gar": _valoare_manuala(m, "ext_gar", "Extra warranty", 0.0, True),
+        "kva_aux": _valoare_manuala(m, "kva_aux", "Consum aux / baterie", kva_aux_baterie(cap)),
+        "specs": {"model": str(m.get("model_cod", "")).strip() or m["model"].strip(),
+                  "config": str(m.get("config", "")).strip(), "weight": greutate},
+    }
+
+
+def optiune_skid_manuala(date, mw, nr_baterii, kva_baterie, forteaza_trafo, nr_fix, m):
+    """Skidul din tab-ul Componente manuale, ca opțiune de skid (fără verificarea intrărilor DC)."""
+    if not str(m.get("brand", "")).strip() or not str(m.get("model", "")).strip():
+        raise ValueError("Completează brandul și modelul skidului manual.")
+    putere = _valoare_manuala(m, "putere", "Putere / skid (MW)")
+    pret = _valoare_manuala(m, "pret", "Preț / skid ($)", bani=True)
+    if putere <= 0 or pret <= 0:
+        raise ValueError("Puterea și prețul skidului manual trebuie să fie pozitive.")
+    nr = nr_fix or math.ceil(mw / putere - 1e-9)
+    o = {"brand": m["brand"].strip(), "tip": m["model"].strip(), "nr": nr, "putere_unit": putere,
+         "putere_totala": nr * putere, "intrari": 0, "min_intrari": 0, "max_intrari": 0, "acceptate": "neverificat",
+         "pret_unit": pret, "pret_total": nr * pret,
+         "transport": 0.0 if m.get("transport_inclus") else _valoare_manuala(m, "transport", "Transport", 0.0, True),
+         "com": _valoare_manuala(m, "com", "Commissioning / skid", 0.0, True), "similar": "", "conexiune": "",
+         "putere_pcs": _valoare_manuala(m, "putere_pcs", "Putere PCS (MW)", putere),
+         "garantie": _text_garantie(m.get("garantie")),
+         "manual": True, "ext_gar": _valoare_manuala(m, "ext_gar", "Extra warranty", 0.0, True)}
+    trafo_pricing = variante_trafo(date["aux"]) if date.get("aux") is not None else []
+    calcul_aux(o, _valoare_manuala(m, "aux_kva", "Trafo aux inclus", 0.0), nr_baterii, kva_baterie,
+               forteaza_trafo, trafo_pricing)
+    return o
+
+
+def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand, nr_fix, cu_trafo,
+                      manual_bat=None, manual_skid=None):
+    """Alege bateria, skidurile compatibile (de la cel mai ieftin) și trafo-ul. Nu generează fișiere.
+    model_baterie / brand = OPTIUNE_MANUALA_... -> componenta din manual_bat / manual_skid."""
+    if model_baterie == OPTIUNE_MANUALA_BATERIE:
+        baterie = baterie_manuala(manual_bat or {}, incoterm)
+    elif model_baterie in baterii_map:
+        baterie = alege_baterie(date["bat"], baterii_map[model_baterie], incoterm)
+    else:
         raise ValueError(f"Bateria '{model_baterie}' nu există în Pricing.xlsx. Selectează o baterie din listă.")
-    baterie = alege_baterie(date["bat"], baterii_map[model_baterie], incoterm)
-    nr_baterii = math.ceil(intrari["mwh"] / baterie["cap"])
-    date_poc = dict(date, skid=skiduri_pentru_poc(date, intrari["poc_kv"]))
-    optiuni, motive = gaseste_skiduri(date_poc, intrari["mw"], nr_baterii, brand, nr_fix,
-                                      baterie_text=f"{baterie['brand']} {baterie['tip']}",
-                                      kva_baterie=kva_aux_baterie(baterie["cap"]), forteaza_trafo=cu_trafo)
+    nr_baterii = math.ceil(intrari["mwh"] / baterie["cap"] - 1e-9)
+    kva_baterie = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
+    if brand == OPTIUNE_MANUALA_SKID:
+        optiuni = [optiune_skid_manuala(date, intrari["mw"], nr_baterii, kva_baterie, cu_trafo, nr_fix,
+                                        manual_skid or {})]
+        motive = {"brand": 0, "putere": 0, "prea_putine": [], "prea_multe": [], "intermediare": [],
+                  "exacte_respinse": [], "respinse": [], "fara_pcs": [], "incompatibil": 0}
+    else:
+        date_poc = dict(date, skid=skiduri_pentru_poc(date, intrari["poc_kv"]))
+        optiuni, motive = gaseste_skiduri(date_poc, intrari["mw"], nr_baterii, brand, nr_fix,
+                                          baterie_text=f"{baterie['brand']} {baterie['tip']}",
+                                          kva_baterie=kva_baterie, forteaza_trafo=cu_trafo)
     if not optiuni:
         raise ValueError(mesaj_fara_skid(intrari["mw"], nr_baterii, brand, motive))
 
-    specs = specs_baterie(date.get("specs"), baterie["tip"])
+    specs = baterie["specs"] if baterie.get("manual") else specs_baterie(date.get("specs"), baterie["tip"])
     specs_lipsa = None
     if specs is None:
         specs_lipsa = ("Specificatii_baterii_BESS.xlsx nu a fost găsit" if date.get("specs") is None else
@@ -1514,13 +1630,16 @@ def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lam
         "[BAT_WEIGHT]": baterie["specs"]["weight"],
         "[GAR_BAT]": baterie["garantie"],
         "[GAR_PCS]": skid["garantie"],
-        "[EXT_GAR_BAT]": bani_eu(rez["ext_gar_bat"]),
-        "[EXT_GAR_PCS]": bani_eu(rez["ext_gar_pcs"]),
+        # componentele manuale: extra warranty introdus de mână (dacă lipsește, rândul dispare din tabel)
+        "[EXT_GAR_BAT]": bani_eu(baterie["ext_gar"] if baterie.get("manual") else rez["ext_gar_bat"]),
+        "[EXT_GAR_PCS]": bani_eu(skid["ext_gar"] if skid.get("manual") else rez["ext_gar_pcs"]),
     }
     cale_pptx = os.path.join(folder, nume + ".pptx")
     ramase = genereaza_pptx(inlocuiri, cale_pptx,
-                            fara_bat=fara_extensie(f"{baterie['brand']} {baterie['tip']}"),
-                            fara_pcs=fara_extensie(skid["brand"]))
+                            fara_bat=fara_extensie(f"{baterie['brand']} {baterie['tip']}")
+                                     or bool(baterie.get("manual") and not baterie.get("ext_gar")),
+                            fara_pcs=fara_extensie(skid["brand"])
+                                     or bool(skid.get("manual") and not skid.get("ext_gar")))
 
     status("Salvez și varianta PDF...")
     cale_pdf, eroare_pdf = os.path.join(folder, nume + ".pdf"), None
@@ -1778,11 +1897,18 @@ class AplicatieOferte:
     def __init__(self, root):
         self.root = root
         self.root.title("Generator Oferte BESS - Taliva")
-        self.root.geometry("470x900")
+        self.root.geometry("900x940")
 
         ttk.Label(root, text="Sistem Ofertare BESS", font=("Helvetica", 16, "bold")).pack(pady=10)
-        frame = ttk.Frame(root)
-        frame.pack(padx=20, fill="x")
+        # Două tab-uri: oferta propriu-zisă și componentele introduse manual (cotații care nu sunt în Pricing)
+        taburi = ttk.Notebook(root)
+        taburi.pack(padx=10, fill="x")
+        tab_oferta, tab_manual = ttk.Frame(taburi), ttk.Frame(taburi)
+        taburi.add(tab_oferta, text="  Ofertă  ")
+        taburi.add(tab_manual, text="  Componente manuale  ")
+        frame = ttk.Frame(tab_oferta)
+        frame.pack(padx=20, pady=10)
+        self._construieste_tab_manual(tab_manual)
 
         self.date = None
         self.baterii_map = {}
@@ -1837,12 +1963,13 @@ class AplicatieOferte:
 
         r = len(campuri)
         ttk.Label(frame, text="Model baterie:").grid(row=r, column=0, sticky="w", pady=5)
-        self.combo_baterie = ttk.Combobox(frame, values=baterii, state="readonly", width=32)
+        self.combo_baterie = ttk.Combobox(frame, values=baterii + [OPTIUNE_MANUALA_BATERIE], state="readonly",
+                                          width=40)
         self.combo_baterie.set(next((b for b in baterii if b.startswith(BATERIE_IMPLICITA)), baterii[0]))
         self.combo_baterie.grid(row=r, column=1, sticky="e", pady=5)
 
         ttk.Label(frame, text="Brand Skid preferat:").grid(row=r + 1, column=0, sticky="w", pady=5)
-        self.combo_brand = ttk.Combobox(frame, values=branduri, state="readonly", width=22)
+        self.combo_brand = ttk.Combobox(frame, values=branduri + [OPTIUNE_MANUALA_SKID], state="readonly", width=40)
         self.combo_brand.current(0)
         self.combo_brand.grid(row=r + 1, column=1, sticky="e", pady=5)
 
@@ -1874,12 +2001,44 @@ class AplicatieOferte:
         self.lbl_status = ttk.Label(root, text="Aștept date...", foreground="gray")
         self.lbl_status.pack()
 
-        self.lbl_sursa = ttk.Label(root, text="", foreground="gray", wraplength=430)
+        self.lbl_sursa = ttk.Label(root, text="", foreground="gray", wraplength=860)
         self.lbl_sursa.pack(pady=5)
         self._afiseaza_sursa()
 
     def _branduri_skid(self):
         return branduri_skid(self.date)
+
+    def _construieste_tab_manual(self, tab):
+        """Câmpurile pentru bateria și skidul introduse manual (două coloane)."""
+        ttk.Label(tab, foreground="gray", wraplength=850, justify="left",
+                  text="Completează doar componentele care nu sunt în Pricing (cotații primite de la furnizori). "
+                       "Apoi, în tab-ul Ofertă, alege „✎ Baterie manuală” la Model baterie și/sau „✎ Skid manual” "
+                       "la Brand skid. Se pot combina cu componentele din baza de date.")\
+            .grid(row=0, column=0, columnspan=2, padx=10, pady=8, sticky="w")
+        self.manual = {"bat": {}, "skid": {}}
+        for coloana, (cheie, titlu, campuri) in enumerate([("bat", "Baterie manuală", CAMPURI_BATERIE_MANUALA),
+                                                           ("skid", "Skid manual", CAMPURI_SKID_MANUAL)]):
+            grup = ttk.LabelFrame(tab, text=titlu)
+            grup.grid(row=1, column=coloana, padx=10, pady=5, sticky="n")
+            for i, (camp, eticheta, implicit) in enumerate(campuri):
+                if camp is None:
+                    ttk.Label(grup, text=eticheta, font=("Helvetica", 10, "bold"))\
+                        .grid(row=i, column=0, columnspan=2, sticky="w", padx=5, pady=(10, 2))
+                elif camp.endswith("_inclus"):
+                    var = tk.BooleanVar()
+                    ttk.Checkbutton(grup, text=eticheta, variable=var)\
+                        .grid(row=i, column=0, columnspan=2, sticky="w", padx=5, pady=3)
+                    self.manual[cheie][camp] = var
+                else:
+                    ttk.Label(grup, text=eticheta).grid(row=i, column=0, sticky="w", padx=5, pady=3)
+                    e = ttk.Entry(grup, width=22)
+                    e.insert(0, implicit)
+                    e.grid(row=i, column=1, padx=5, pady=3)
+                    self.manual[cheie][camp] = e
+
+    def citeste_manual(self, cheie):
+        return {camp: (w.get() if isinstance(w, tk.BooleanVar) else w.get().strip())
+                for camp, w in self.manual[cheie].items()}
 
     def _valori_poc(self):
         valori = [f"{POC_IMPLICIT_KV} kV (România)"]
@@ -1955,8 +2114,8 @@ class AplicatieOferte:
                 self.status("Pricing.xlsx s-a modificat, îl recitesc...")
                 self.date = incarca_date()
                 self.baterii_map = lista_baterii(self.date["bat"])
-                self.combo_baterie["values"] = list(self.baterii_map)
-                self.combo_brand["values"] = ["Oricare"] + self._branduri_skid()
+                self.combo_baterie["values"] = list(self.baterii_map) + [OPTIUNE_MANUALA_BATERIE]
+                self.combo_brand["values"] = ["Oricare"] + self._branduri_skid() + [OPTIUNE_MANUALA_SKID]
                 self.combo_poc["values"] = self._valori_poc()
                 self._afiseaza_sursa()
             date = self.date
@@ -1964,7 +2123,8 @@ class AplicatieOferte:
             nr_cerut = self.combo_nr_skid.get()
             p = pregateste_oferta(date, self.baterii_map, intrari, self.combo_baterie.get(),
                                   self.combo_incoterm.get(), self.combo_brand.get(),
-                                  None if nr_cerut == AUTO_SKID else int(nr_cerut), self.foloseste_aux.get())
+                                  None if nr_cerut == AUTO_SKID else int(nr_cerut), self.foloseste_aux.get(),
+                                  manual_bat=self.citeste_manual("bat"), manual_skid=self.citeste_manual("skid"))
             baterie, nr_baterii = p["baterie"], p["nr_baterii"]
             optiuni, motive, lista, exact = p["optiuni"], p["motive"], p["lista"], p["exact"]
             if p["specs_lipsa"] and not messagebox.askyesno(
@@ -1976,6 +2136,13 @@ class AplicatieOferte:
             alegere = self.dialog_previzualizare(intrari, baterie, nr_baterii, lista, exact,
                                                  raport_skiduri(optiuni, motive))
             if alegere is None:
+                self.status("Anulat.", "gray")
+                return
+            if lista[alegere].get("manual") and not messagebox.askyesno(
+                    "Verificare compatibilitate",
+                    "Skidul e introdus manual, iar programul NU a verificat compatibilitatea lui cu bateriile "
+                    f"({nr_baterii} x {baterie['tip']}): intrări DC, tensiune, putere.\n\n"
+                    "Ai verificat compatibilitatea componentelor? Generez oferta?"):
                 self.status("Anulat.", "gray")
                 return
             self.genereaza(intrari, baterie, nr_baterii, lista[alegere], lista[alegere]["trafo"])
@@ -1996,10 +2163,13 @@ class AplicatieOferte:
         txt = (f"Cerut: {intrari['mwh']:g} MWh / {intrari['mw']:g} MW, conexiune {intrari['poc_kv']:g} kV\n"
                f"Baterii: {nr_baterii} x {baterie['tip']} = {cap_prop:.3f} MWh "
                f"\nLivrare: {INCOTERMS[baterie['incoterm']]}"
-               f"\nPreț {baterie['incoterm']} (coloana {baterie['coloana_pret']}): "
-               f"{baterie['pret']:,.2f} $/MWh (cotație {baterie['data']}, "
-               f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $")
-        txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_aux_baterie(baterie['cap']):g} kVA + "
+               + (f"\nPreț {baterie['incoterm']}: {baterie['pret']:,.2f} $/MWh (✎ baterie introdusă manual, "
+                  f"{baterie['brand']}) -> baterii: {cost_bat:,.0f} $" if baterie.get("manual") else
+                  f"\nPreț {baterie['incoterm']} (coloana {baterie['coloana_pret']}): "
+                  f"{baterie['pret']:,.2f} $/MWh (cotație {baterie['data']}, "
+                  f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"))
+        kva_bat = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
+        txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA + "
                 f"{KVA_CONSUM_SKID:g} kVA / skid; trafo-ul aux extern se adaugă automat unde skidul nu acoperă"
                 + (" (forțat la toate opțiunile)" if self.foloseste_aux.get() else ""))
         ttk.Label(win, text=txt, justify="left").pack(padx=15, pady=10, anchor="w")

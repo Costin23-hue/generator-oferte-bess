@@ -31,6 +31,16 @@ La pornire, programul se loghează cu contul Microsoft de firmă (browser, doar 
 Setările sunt în `CONFIGURARE` (`DRIVE_CLIENT_ID`, `DRIVE_TENANT_ID`, `LINK_FOLDER_PRICING`, `LINK_FOLDER_OFERTARE`).
 Dacă Drive-ul nu e disponibil, programul poate continua cu folderele sincronizate (ca înainte).
 
+## Componente manuale
+
+Tab-ul „Componente manuale” permite o baterie și/sau un skid care nu sunt în Pricing (cotații primite de la
+furnizori). În tab-ul „Ofertă” se aleg cu „✎ Baterie manuală” / „✎ Skid manual” și se pot combina cu
+componentele din baza de date. Bateria: preț DDP/DAP în $/MWh, transport pe container (sau inclus în preț),
+garanție, extra warranty opțional, specificații pentru prezentare. Skidul: putere, preț, transport (sau inclus),
+commissioning, trafo aux inclus; compatibilitatea nu e verificată (programul cere confirmare înainte de generare).
+Fără extra warranty completat, rândul componentei manuale dispare din tabelul „Warranty Extension”.
+În câmpurile de bani, punctul e separator de mii („75.000” = 75000).
+
 ## Ce trebuie să fie în `Ofertare BESS`
 
 - `PCS - MV skid.xlsx`
