@@ -102,6 +102,9 @@ RACKURI_PER_INTRARE = (1, 2)
 # TBEA: rack-urile bateriei se conectează direct la PCS; un skid TBEA ia 12 sau 24 de intrări.
 # Puterea skidului se ia atunci din coloana Power din Pricing. Dacă skidul apare în fișierul PCS, au prioritate datele de acolo.
 INTRARI_FARA_PCS = {"TBEA": (12, 24)}
+# Branduri la care puterea skidului e cea nominală din coloana 'Skid power' din 'PCS - MV skid.xlsx'
+# (TBEA: 48 x 215 kW = 10,32 MW, dar în ofertă apare 10 MW), nu putere PCS x nr. PCS.
+PUTERE_NOMINALA_SKID = ("TBEA",)
 
 # Consum auxiliar / baterie, după capacitatea bateriei: (de la MWh, kVA), crescător.
 # 5 MWh (Jinko, REPT) -> 55 kVA (technical proposal Jinko: "55 kVA per battery container"); 6,25 MWh -> 65 kVA.
@@ -598,6 +601,9 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
         # Puterea = putere PCS x nr. PCS pe cadru (din fișierul PCS); altfel coloana Power din Pricing.
         # (în Pricing.xlsx unele skiduri Sinexcel au puterea tastată greșit față de numele modelului)
         calc = numar(skid.get("PCS power")) * numar(skid.get("no / frame"))
+        nominala = numar(skid.get("Skid power"))
+        if nominala > 0 and any(b.lower() in str(skid.get(c_brand, "")).lower() for b in PUTERE_NOMINALA_SKID):
+            calc = nominala
         putere = calc if calc > 0 else numar(skid.get(c_putere))
         if putere <= 0:
             motive["putere"] += 1
