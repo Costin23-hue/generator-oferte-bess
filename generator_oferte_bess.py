@@ -815,7 +815,8 @@ def aux_inclus_skid(skid, nume):
         for coloana in skid.index:
             if str(coloana).strip().lower() == COLOANA_AUX_PCS.lower() and numar(skid[coloana]) > 0:
                 return numar(skid[coloana])
-    m = re.search(r"aux\D{0,12}?(\d+(?:[.,]\d+)?)\s*kva", str(nume), re.I)
+    m = (re.search(r"aux\D{0,12}?(\d+(?:[.,]\d+)?)\s*kva", str(nume), re.I)        # '+ AUX TRAFO 200kVA'
+         or re.search(r"(\d+(?:[.,]\d+)?)\s*kva\s*aux", str(nume), re.I))          # '+ 200kVA  AUX'
     return float(m.group(1).replace(",", ".")) if m else 0.0
 
 
