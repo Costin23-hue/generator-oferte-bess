@@ -15,7 +15,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]      # macos-latest = Mac cu procesor Apple (M1/M2/M3/M4)
+        # Mac pus pe pauză (30.10.2026). Pentru reluare: os: [windows-latest, macos-latest]
+        os: [windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
