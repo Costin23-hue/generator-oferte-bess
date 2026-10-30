@@ -894,6 +894,7 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
         sh.range("F5").value = baterie["transport"]
 
         sh.range("A6").value = skid["tip"]
+        sh.range("B6").value = skid["putere_unit"]               # puterea unui skid (MW); B8 = B6 x C6
         sh.range("C6").value = skid["nr"]
         sh.range("D6").value = skid["pret_unit"]
         sh.range("F6").value = skid["transport"]
