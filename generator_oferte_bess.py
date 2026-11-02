@@ -70,6 +70,28 @@ DRIVE_SCOPURI = "offline_access User.Read Files.ReadWrite.All Sites.Read.All"
 # Aplicația a fost aprobată de administratorul Microsoft 365 (29.10.2026). Cu DRIVE_ACTIV = False programul
 # lucrează doar cu folderele sincronizate (Pricing.xlsx e copiat oricum în 'Ofertare BESS' de fluxul Power Automate).
 DRIVE_ACTIV = True
+
+# Tabelul cu ofertele (BESS_Proposals.xlsx, în Drive): nr. de contract se ia de acolo (primul rând cu nr. ST și fără
+# client, în foaia țării alese), iar după verificarea ofertei, butonul "Trece în BESS_Proposals" completează rândul.
+# Generarea singură NU scrie nimic în tabel. Coloanele: litera -> câmpul din ofertă.
+LINK_BESS_PROPOSALS = ("https://talivaenerji-my.sharepoint.com/:x:/g/personal/levon_solartoday_com_tr/"
+                       "IQCrDwTTcwp6QpyYu2f5O3EkASbS1XS6XCoXNnYhyM-YNG8?e=6iU2pL")
+TABELE_OFERTE = {
+    "Romania": {"foaie": "2026-Romania", "rand_antet": 8, "col_nr": "X", "col_client": "D", "col_libere": "CDE",
+                "coloane": {"C": "data_cerere", "D": "client", "E": "proiect", "F": "locatie", "G": "tara",
+                            "H": "tip", "I": "responsabil", "J": "brand_skid", "K": "mw", "L": "mwh",
+                            "M": "brand_baterie", "N": "pret_total", "O": "pret_mwh", "P": "po", "Y": "data_oferta"}},
+    "Moldova": {"foaie": "Moldova", "rand_antet": 1, "col_nr": "P", "col_client": "C", "col_libere": "ACD",
+                "coloane": {"A": "data_cerere", "B": "data_oferta", "C": "client", "D": "proiect", "E": "locatie",
+                            "F": "tip", "G": "responsabil", "H": "mw", "I": "mwh", "J": "c_rate",
+                            "K": "mwh_container", "L": "pret_total", "M": "cost", "O": "po"}},
+    "Poland": {"foaie": "Poland", "rand_antet": 1, "col_nr": "N", "col_client": "B", "col_libere": "ABC",
+               "coloane": {"A": "data_cerere", "B": "client", "C": "proiect", "D": "locatie", "E": "tip",
+                           "F": "responsabil", "G": "mw", "H": "mwh", "I": "mwh_container", "J": "pret_total",
+                           "K": "pret_mwh", "L": "po"}},
+}
+TIPURI_PROIECT = ["Utility", "C&I"]
+MAX_RANDURI_TABEL = 3000
 FORMAT_DATA = "%d/%m/%y"                    # cum apare data în prezentare (ex. 15/10/26)
 # Nr. proiect / contract: câmpul din fereastră pornește cu ST + anul și luna curentă + XXX (ex. ST202610XXX);
 # îl completezi tu (ex. ST202606109). Apare în prezentare la [NR_PROIECT] și în numele fișierului:
@@ -1003,6 +1025,7 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
             "pret_ddp": sh.range("H13").value or 0,
             "pret_mwh": sh.range("H14").value or 0,
             "ems_yearly": sh.range("K5").value or 0,
+            "cost": sh.range("G13").value or 0,                  # valoarea de achiziție (pentru tabelul Moldova)
             "ext_gar_bat": sh.range(CELULA_EXT_GAR_BAT).value or 0,
             "ext_gar_pcs": sh.range(CELULA_EXT_GAR_PCS).value or 0,
             "nr_trafo": sh.range("C7").value or 0,
@@ -1458,6 +1481,29 @@ class DriveCloud:
             json.dump(stare, f)
         return actualizate
 
+    # ---------------- Excel Online (tabelul cu oferte) ----------------
+    def fisier_din_link(self, link):
+        """(drive_id, item_id) pentru un link de fișier (ex. BESS_Proposals.xlsx)."""
+        cod = "u!" + base64.urlsafe_b64encode(link.encode()).decode().rstrip("=")
+        j = self._cerere("GET", f"/shares/{cod}/driveItem")
+        return j["parentReference"]["driveId"], j["id"]
+
+    def _url_foaie(self, fisier, foaie):
+        return f"/drives/{fisier[0]}/items/{fisier[1]}/workbook/worksheets/{urllib.parse.quote(foaie, safe='')}"
+
+    def citeste_zona(self, fisier, foaie, adresa):
+        """Valorile unei zone, ex. 'X9:X3000' -> [[v], [v], ...]."""
+        return self._cerere("GET", self._url_foaie(fisier, foaie) + f"/range(address='{adresa}')?$select=values")["values"]
+
+    def scrie_zona(self, fisier, foaie, adresa, valori=None, format_numar=None):
+        corp = {}
+        if valori is not None:
+            corp["values"] = valori
+        if format_numar is not None:
+            corp["numberFormat"] = format_numar
+        self._cerere("PATCH", self._url_foaie(fisier, foaie) + f"/range(address='{adresa}')",
+                     date=json.dumps(corp).encode(), tip="application/json")
+
     def nume_oferte(self):
         """Numele folderelor din 'Ofertare BESS/Oferte generate' (pentru numerotarea versiunilor)."""
         try:
@@ -1483,6 +1529,110 @@ class DriveCloud:
             cand = f"\n(modificat ultima dată: {moment:%d/%m/%y %H:%M})"
         cont = self.cont.get("mail") or self.cont.get("userPrincipalName", "")
         return f"Prețuri din Drive: Purchasing Prices Update_BESS / {FISIER_PRICING}{cand}\nCont: {cont}"
+
+
+def _index_coloana(litera):
+    n = 0
+    for ch in litera.upper():
+        n = n * 26 + ord(ch) - 64
+    return n
+
+
+def _fisier_propuneri():
+    global _CACHE_FISIER_PROPUNERI
+    if _CACHE_FISIER_PROPUNERI is None:
+        _CACHE_FISIER_PROPUNERI = DRIVE.fisier_din_link(LINK_BESS_PROPOSALS)
+    return _CACHE_FISIER_PROPUNERI
+
+
+_CACHE_FISIER_PROPUNERI = None
+
+
+def contracte_din_tabel(tara, cu_liber=False):
+    """[(rând, nr. contract, client)] din foaia țării: toate rândurile care au un nr. de contract.
+    cu_liber=True: (rând, nr, client, liber), liber = fără dată, client și proiect (coloanele 'col_libere')."""
+    if DRIVE is None:
+        raise ValueError("Tabelul BESS_Proposals se poate folosi doar cu Drive-ul conectat.")
+    cfg = TABELE_OFERTE[tara]
+    start, sfarsit = cfg["rand_antet"] + 1, cfg["rand_antet"] + MAX_RANDURI_TABEL
+    numere = DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"], f"{cfg['col_nr']}{start}:{cfg['col_nr']}{sfarsit}")
+    clienti = DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"],
+                                 f"{cfg['col_client']}{start}:{cfg['col_client']}{sfarsit}")
+    randuri = [(start + i, str(n[0]).strip(), str(c[0] or "").strip())
+               for i, (n, c) in enumerate(zip(numere, clienti)) if str(n[0]).strip()]
+    if not cu_liber:
+        return randuri
+    alte = [DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"], f"{col}{start}:{col}{sfarsit}")
+            for col in cfg["col_libere"]]
+    return [(r, nr, client, all(str(coloana[r - start][0] or "").strip() == "" for coloana in alte))
+            for r, nr, client in randuri]
+
+
+def nr_contract_liber(tara):
+    """Primul nr. de contract din foaia țării pe un rând gol (fără dată, client, proiect), sau None."""
+    return next((nr for _, nr, _, liber in contracte_din_tabel(tara, cu_liber=True)
+                 if re.match(r"ST\d+", nr) and liber), None)
+
+
+def _valoare_tabel(inregistrare, camp):
+    valoare = inregistrare.get(camp)
+    if camp.startswith("data_") and valoare:
+        zi = datetime.strptime(valoare, "%Y-%m-%d")
+        return (zi - datetime(1899, 12, 30)).days            # dată Excel (număr de zile)
+    return "" if valoare is None else valoare
+
+
+def _valoare_text(inregistrare, camp):
+    valoare = inregistrare.get(camp)
+    if camp.startswith("data_") and valoare:
+        return datetime.strptime(valoare, "%Y-%m-%d").strftime("%d.%m.%Y")
+    if camp in ("pret_total", "pret_mwh", "cost") and valoare not in (None, ""):
+        return f"{bani_eu(valoare)} $"
+    return "" if valoare is None else str(valoare)
+
+
+def trece_in_tabel(inregistrare, confirma_suprascriere):
+    """Completează în BESS_Proposals rândul cu nr. de contract al ofertei. Returnează rândul sau None (anulat)."""
+    cfg = TABELE_OFERTE[inregistrare["tara"]]
+    rand, client_existent = next(((r, c) for r, nr, c in contracte_din_tabel(inregistrare["tara"])
+                                  if nr == inregistrare["nr"]), (None, None))
+    if rand is None:
+        raise ValueError(f"Nr. de contract {inregistrare['nr']} nu există în foaia '{cfg['foaie']}' din "
+                         "BESS_Proposals. Verifică numărul (sau dacă oferta e doar un test).")
+    if client_existent and not confirma_suprascriere(rand, client_existent):
+        return None
+    celule = {col: _valoare_tabel(inregistrare, camp) for col, camp in cfg["coloane"].items()}
+    coloane = sorted(celule, key=_index_coloana)
+    grupuri = [[coloane[0]]]                                   # coloane alăturate -> o singură scriere
+    for col in coloane[1:]:
+        if _index_coloana(col) == _index_coloana(grupuri[-1][-1]) + 1:
+            grupuri[-1].append(col)
+        else:
+            grupuri.append([col])
+    fisier = _fisier_propuneri()
+    for g in grupuri:
+        DRIVE.scrie_zona(fisier, cfg["foaie"], f"{g[0]}{rand}:{g[-1]}{rand}", valori=[[celule[c] for c in g]])
+    for col, camp in cfg["coloane"].items():
+        if camp.startswith("data_") and celule[col] != "":
+            DRIVE.scrie_zona(fisier, cfg["foaie"], f"{col}{rand}", format_numar=[["dd.mm.yyyy"]])
+    return rand
+
+
+FISIER_OFERTE_NETRECUTE = os.path.join(os.path.dirname(FISIER_SETARI), "oferte_netrecute.json")
+
+
+def oferte_netrecute():
+    try:
+        with open(FISIER_OFERTE_NETRECUTE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
+
+
+def salveaza_oferte_netrecute(lista):
+    os.makedirs(os.path.dirname(FISIER_OFERTE_NETRECUTE), exist_ok=True)
+    with open(FISIER_OFERTE_NETRECUTE, "w", encoding="utf-8") as f:
+        json.dump(lista, f, ensure_ascii=False, indent=2)
 
 
 def porneste_drive():
@@ -1952,7 +2102,8 @@ class AplicatieOferte:
         taburi.add(tab_oferta, text="  Ofertă  ")
         taburi.add(tab_manual, text="  Componente manuale  ")
         frame = ttk.Frame(tab_oferta)
-        frame.pack(padx=20, pady=10)
+        frame.pack(side="left", padx=20, pady=10, anchor="n")
+        self._construieste_panou_tabel(tab_oferta)
         self._construieste_tab_manual(tab_manual)
 
         self.date = None
@@ -2047,7 +2198,9 @@ class AplicatieOferte:
 
         self.btn = tk.Button(root, text="Previzualizare și generare", font=("Helvetica", 12, "bold"),
                              command=self.previzualizeaza, **STIL_BUTON)
-        self.btn.pack(pady=20, fill="x", padx=20)
+        self.btn.pack(pady=(15, 5), fill="x", padx=20)
+        tk.Button(root, text="📋 Trece o ofertă verificată în BESS_Proposals…", command=self.dialog_tabel)\
+            .pack(pady=(0, 10), fill="x", padx=20)
 
         self.lbl_status = ttk.Label(root, text="Aștept date...", foreground="gray")
         self.lbl_status.pack()
@@ -2055,6 +2208,8 @@ class AplicatieOferte:
         self.lbl_sursa = ttk.Label(root, text="", foreground="gray", wraplength=860)
         self.lbl_sursa.pack(pady=5)
         self._afiseaza_sursa()
+        if DRIVE is not None:
+            self.root.after(300, self.ia_nr_contract)
 
     def _branduri_skid(self):
         return branduri_skid(self.date)
@@ -2086,6 +2241,178 @@ class AplicatieOferte:
                     e.insert(0, implicit)
                     e.grid(row=i, column=1, padx=5, pady=3)
                     self.manual[cheie][camp] = e
+
+    # ---------------- tabelul BESS_Proposals ----------------
+    def _construieste_panou_tabel(self, parinte):
+        grup = ttk.LabelFrame(parinte, text="Date pentru tabelul BESS_Proposals")
+        grup.pack(side="left", padx=10, pady=10, anchor="n")
+        ttk.Label(grup, text="Țară (foaia din tabel):").grid(row=0, column=0, sticky="w", padx=5, pady=4)
+        self.combo_tara = ttk.Combobox(grup, values=list(TABELE_OFERTE), state="readonly", width=18)
+        self.combo_tara.set("Romania")
+        self.combo_tara.grid(row=0, column=1, padx=5, pady=4)
+        self.combo_tara.bind("<<ComboboxSelected>>", lambda e: self.ia_nr_contract())
+        ttk.Label(grup, text="Tip proiect:").grid(row=1, column=0, sticky="w", padx=5, pady=4)
+        self.combo_tip = ttk.Combobox(grup, values=TIPURI_PROIECT, state="readonly", width=18)
+        self.combo_tip.set(TIPURI_PROIECT[0])
+        self.combo_tip.grid(row=1, column=1, padx=5, pady=4)
+        ttk.Label(grup, text="Responsabil:").grid(row=2, column=0, sticky="w", padx=5, pady=4)
+        self.txt_responsabil = ttk.Entry(grup, width=21)
+        self.txt_responsabil.insert(0, citeste_setari().get("responsabil", ""))
+        self.txt_responsabil.grid(row=2, column=1, padx=5, pady=4)
+        ttk.Label(grup, text="Data (zz.ll.aaaa):").grid(row=3, column=0, sticky="w", padx=5, pady=4)
+        self.txt_data_cerere = ttk.Entry(grup, width=21)
+        self.txt_data_cerere.insert(0, datetime.now().strftime("%d.%m.%Y"))
+        self.txt_data_cerere.grid(row=3, column=1, padx=5, pady=4)
+        tk.Button(grup, text="↻ Ia nr. de contract liber din tabel", command=self.ia_nr_contract)\
+            .grid(row=4, column=0, columnspan=2, sticky="we", padx=5, pady=(8, 4))
+        self.lbl_tabel = ttk.Label(grup, text="", foreground="gray", wraplength=300, justify="left")
+        self.lbl_tabel.grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=4)
+        ttk.Label(grup, foreground="gray", wraplength=300, justify="left",
+                  text="Generarea NU scrie nimic în tabel. După ce verifici oferta, folosește butonul "
+                       "„Trece o ofertă verificată în BESS_Proposals” de jos.").grid(row=6, column=0, columnspan=2,
+                                                                                    sticky="w", padx=5, pady=4)
+
+    def ia_nr_contract(self):
+        """Pune în 'Nr. proiect' primul nr. de contract liber din foaia țării alese."""
+        if DRIVE is None:
+            self.lbl_tabel.config(text="Drive-ul nu e conectat: nr. de contract se scrie manual.")
+            return
+        try:
+            self.status("Caut nr. de contract liber în BESS_Proposals...")
+            nr = nr_contract_liber(self.combo_tara.get())
+        except Exception as e:
+            self.lbl_tabel.config(text=f"Nu am putut citi BESS_Proposals: {e}", foreground="red")
+            self.status("Aștept date...", "gray")
+            return
+        self.status("Aștept date...", "gray")
+        if not nr:
+            self.lbl_tabel.config(text=f"Nu mai există nr. de contract liber în foaia "
+                                       f"'{TABELE_OFERTE[self.combo_tara.get()]['foaie']}'. Adaugă numere noi în "
+                                       "tabel.", foreground="red")
+            return
+        camp = self.intrari["Nr. proiect:"]
+        camp.delete(0, "end")
+        camp.insert(0, nr)
+        self.lbl_tabel.config(text=f"Nr. de contract liber: {nr} (foaia "
+                                   f"'{TABELE_OFERTE[self.combo_tara.get()]['foaie']}')", foreground="green")
+
+    def _verifica_nr_contract(self, intrari):
+        """Înainte de generare: nr. de contract există în tabel și e liber (sau al aceluiași client)?"""
+        if DRIVE is None:
+            return True
+        tara = self.combo_tara.get()
+        try:
+            gasit = next(((r, c) for r, nr, c in contracte_din_tabel(tara) if nr == intrari["nr_proiect"]), None)
+        except Exception as e:
+            return messagebox.askyesno("Atenție", f"Nu am putut verifica nr. de contract în BESS_Proposals:\n{e}"
+                                                  "\n\nContinui oricum?")
+        foaie = TABELE_OFERTE[tara]["foaie"]
+        if gasit is None:
+            return messagebox.askyesno(
+                "Nr. de contract", f"Nr. {intrari['nr_proiect']} NU există în foaia '{foaie}' din BESS_Proposals.\n\n"
+                "Oferta se poate genera (ex. ca test), dar nu va putea fi trecută în tabel.\n\nContinui?")
+        rand, client = gasit
+        if client and client.strip().lower() != intrari["client"].strip().lower():
+            return messagebox.askyesno(
+                "Nr. de contract", f"Nr. {intrari['nr_proiect']} e deja folosit în foaia '{foaie}' (rândul {rand}) "
+                f"pentru clientul „{client}”.\n\nContinui cu acest număr?")
+        return True
+
+    def _data_cerere(self):
+        text = self.txt_data_cerere.get().strip()
+        for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        raise ValueError(f"Data '{text}' nu e validă. Scrie-o ca zz.ll.aaaa (ex. 02.11.2026).")
+
+    def _inregistrare_tabel(self, intrari, baterie, skid, r):
+        """Datele ofertei pentru BESS_Proposals (salvate în lista 'de trecut în tabel')."""
+        salveaza_setari(dict(citeste_setari(), responsabil=self.txt_responsabil.get().strip()))
+        return {
+            "nume": r["nume"], "creat": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "tara": self.combo_tara.get(), "nr": intrari["nr_proiect"],
+            "data_cerere": self._data_cerere(), "data_oferta": datetime.now().strftime("%Y-%m-%d"),
+            "client": intrari["client"], "proiect": intrari["proiect"], "locatie": intrari["locatie"],
+            "tip": self.combo_tip.get(), "responsabil": self.txt_responsabil.get().strip(),
+            "brand_skid": skid["brand"], "mw": intrari["mw"], "mwh": intrari["mwh"],
+            "brand_baterie": baterie["brand"], "mwh_container": baterie["cap"],
+            "c_rate": nr_eu(round(intrari["mw"] / intrari["mwh"], 2)) + "C",
+            "pret_total": round(r["rez"]["pret_ddp"], 2), "pret_mwh": round(r["rez"]["pret_mwh"], 2),
+            "cost": round(r["rez"].get("cost", 0), 2), "po": "W",
+        }
+
+    def dialog_tabel(self):
+        """Lista ofertelor generate și netrecute; cea aleasă se trece în BESS_Proposals."""
+        if DRIVE is None:
+            messagebox.showwarning("BESS_Proposals", "Tabelul se poate completa doar cu Drive-ul conectat.")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("Trece în BESS_Proposals")
+        win.transient(self.root)
+        win.grab_set()
+        ttk.Label(win, text="Oferte generate și încă netrecute în tabel (alege una, după ce ai verificat-o):",
+                  font=("Helvetica", 10, "bold")).pack(padx=10, pady=8, anchor="w")
+        lista = tk.Listbox(win, width=120, height=12, font=("Consolas", 9))
+        lista.pack(padx=10, fill="both", expand=True)
+
+        def reincarca():
+            lista.delete(0, "end")
+            for o in oferte_netrecute():
+                lista.insert("end", f"{o['nr']:<14} {o['tara']:<8} {o['client'][:18]:<18} "
+                                    f"{bani_eu(o['pret_total'])} $   {o['nume']}   (generată {o['creat']})")
+
+        def aleasa():
+            if not lista.curselection():
+                messagebox.showinfo("BESS_Proposals", "Alege o ofertă din listă.", parent=win)
+                return None
+            return lista.curselection()[0]
+
+        def trece():
+            i = aleasa()
+            if i is None:
+                return
+            o = oferte_netrecute()[i]
+            cfg = TABELE_OFERTE[o["tara"]]
+            rezumat = "\n".join(f"{col}: {_valoare_text(o, camp)}" for col, camp in cfg["coloane"].items())
+            if not messagebox.askyesno("Confirmare", f"Trec în foaia '{cfg['foaie']}', pe rândul cu nr. de contract "
+                                                     f"{o['nr']}:\n\n{rezumat}\n\nContinui?", parent=win):
+                return
+            try:
+                rand = trece_in_tabel(o, lambda r, c: messagebox.askyesno(
+                    "Rând deja completat", f"Rândul {r} (nr. {o['nr']}) are deja clientul „{c}”.\n\n"
+                    "Îl suprascriu cu oferta aceasta (ex. o versiune nouă)?", parent=win))
+            except Exception as e:
+                messagebox.showerror("Eroare", str(e), parent=win)
+                return
+            if rand is None:
+                return
+            ramase = oferte_netrecute()
+            del ramase[i]
+            salveaza_oferte_netrecute(ramase)
+            reincarca()
+            messagebox.showinfo("Gata", f"Oferta {o['nr']} a fost trecută în '{cfg['foaie']}', rândul {rand}.",
+                                parent=win)
+            self.ia_nr_contract()
+
+        def sterge():
+            i = aleasa()
+            if i is None:
+                return
+            ramase = oferte_netrecute()
+            if messagebox.askyesno("Șterge", f"Scot din listă oferta {ramase[i]['nume']}?\n(Tabelul nu se "
+                                             "modifică; fișierele ofertei rămân în Drive.)", parent=win):
+                del ramase[i]
+                salveaza_oferte_netrecute(ramase)
+                reincarca()
+
+        bf = ttk.Frame(win)
+        bf.pack(pady=10)
+        tk.Button(bf, text="Trece în tabel", command=trece, **STIL_BUTON).pack(side="left", padx=6)
+        tk.Button(bf, text="Șterge din listă (test)", command=sterge).pack(side="left", padx=6)
+        tk.Button(bf, text="Închide", command=win.destroy).pack(side="left", padx=6)
+        reincarca()
 
     def _mod_trafo(self):
         """'fara' / True (forțat) / False (automat), după cele două bife."""
@@ -2193,6 +2520,9 @@ class AplicatieOferte:
             if alegere is None:
                 self.status("Anulat.", "gray")
                 return
+            if not self._verifica_nr_contract(intrari):
+                self.status("Anulat.", "gray")
+                return
             if lista[alegere].get("manual") and not messagebox.askyesno(
                     "Verificare compatibilitate",
                     "Skidul e introdus manual, iar programul NU a verificat compatibilitatea lui cu bateriile "
@@ -2272,6 +2602,11 @@ class AplicatieOferte:
                 link_drive = DRIVE.urca_oferta(r["folder"])
             except Exception as e:
                 eroare_drive = str(e)
+        if DRIVE is not None:
+            try:
+                salveaza_oferte_netrecute(oferte_netrecute() + [self._inregistrare_tabel(intrari, baterie, skid, r)])
+            except Exception as e:
+                messagebox.showwarning("BESS_Proposals", f"Oferta nu a putut fi pusă în lista de trecut în tabel:\n{e}")
         self.status("Finalizat cu succes!", "green")
         if DRIVE is not None and eroare_drive is None:
             mesaj = f"Oferta a fost urcată în Drive:\n\n📂 Ofertare BESS / {FOLDER_OFERTE} / {r['nume']}\n\n"
@@ -2280,6 +2615,9 @@ class AplicatieOferte:
             if eroare_drive:
                 mesaj = f"⚠ Oferta NU a putut fi urcată în Drive:\n{eroare_drive}\n\n" + mesaj
         mesaj += f"{os.path.basename(r['cale_excel'])}\n{r['nume']}.pptx"
+        if DRIVE is not None:
+            mesaj = ("ℹ Oferta NU e trecută încă în BESS_Proposals. După ce o verifici, folosește butonul "
+                     "„Trece o ofertă verificată în BESS_Proposals”.\n\n" + mesaj)
         mesaj += f"\n{r['nume']}.pdf" if r["eroare_pdf"] is None else \
                  f"\n\n⚠ PDF-ul nu s-a putut crea (e nevoie de PowerPoint instalat):\n{r['eroare_pdf']}"
         if r["ramase"]:

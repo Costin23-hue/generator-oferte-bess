@@ -41,6 +41,14 @@ commissioning, trafo aux inclus; compatibilitatea nu e verificată (programul ce
 Fără extra warranty completat, rândul componentei manuale dispare din tabelul „Warranty Extension”.
 În câmpurile de bani, punctul e separator de mii („75.000” = 75000).
 
+## Tabelul BESS_Proposals
+
+Nr. de contract se ia automat din `BESS_Proposals.xlsx` (Drive): primul rând cu nr. ST fără dată, client și proiect
+din foaia țării alese (Romania → „2026-Romania”, Moldova → „Moldova”, Poland → „Poland”). Generarea ofertei NU scrie
+în tabel: oferta intră în lista locală „de trecut în tabel”, iar după verificare, butonul „Trece o ofertă verificată
+în BESS_Proposals” completează rândul cu acel nr. de contract (prin Excel Online / Microsoft Graph).
+Coloanele completate sunt în `TABELE_OFERTE`.
+
 ## Ce trebuie să fie în `Ofertare BESS`
 
 - `PCS - MV skid.xlsx`
