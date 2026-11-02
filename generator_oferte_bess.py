@@ -1569,9 +1569,26 @@ def contracte_din_tabel(tara, cu_liber=False):
 
 
 def nr_contract_liber(tara):
-    """Primul nr. de contract din foaia țării pe un rând gol (fără dată, client, proiect), sau None."""
-    return next((nr for _, nr, _, liber in contracte_din_tabel(tara, cu_liber=True)
-                 if re.match(r"ST\d+", nr) and liber), None)
+    """Nr. de contract pentru o ofertă nouă: primul nr. pregătit pe un rând gol (fără dată, client, proiect);
+    dacă nu mai e niciunul, ultimul nr. ST din foaie + 1 (va primi un rând nou). Returnează (nr, rând_nou)."""
+    randuri = contracte_din_tabel(tara, cu_liber=True)
+    liber = next((nr for _, nr, _, gol in randuri if re.fullmatch(r"ST\d+", nr) and gol), None)
+    if liber:
+        return liber, False
+    numere = [int(nr[2:]) for _, nr, _, _ in randuri if re.fullmatch(r"ST\d+", nr)]
+    return (f"ST{max(numere) + 1}", True) if numere else (None, False)
+
+
+def _rand_nou(cfg):
+    """Primul rând de după ultimul rând folosit (nr. de contract, dată, client sau proiect)."""
+    start, sfarsit = cfg["rand_antet"] + 1, cfg["rand_antet"] + MAX_RANDURI_TABEL
+    ultimul = cfg["rand_antet"]
+    for col in cfg["col_nr"] + cfg["col_libere"]:
+        valori = DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"], f"{col}{start}:{col}{sfarsit}")
+        folosite = [i for i, v in enumerate(valori) if str(v[0] or "").strip()]
+        if folosite:
+            ultimul = max(ultimul, start + folosite[-1])
+    return ultimul + 1
 
 
 def _valoare_tabel(inregistrare, camp):
@@ -1596,12 +1613,17 @@ def trece_in_tabel(inregistrare, confirma_suprascriere):
     cfg = TABELE_OFERTE[inregistrare["tara"]]
     rand, client_existent = next(((r, c) for r, nr, c in contracte_din_tabel(inregistrare["tara"])
                                   if nr == inregistrare["nr"]), (None, None))
-    if rand is None:
-        raise ValueError(f"Nr. de contract {inregistrare['nr']} nu există în foaia '{cfg['foaie']}' din "
-                         "BESS_Proposals. Verifică numărul (sau dacă oferta e doar un test).")
-    if client_existent and not confirma_suprascriere(rand, client_existent):
+    rand_nou = rand is None
+    if rand_nou:                                       # nr. nou (după ultimul din tabel) -> rând nou
+        if not re.fullmatch(r"ST\d+", inregistrare["nr"]):
+            raise ValueError(f"Nr. de contract '{inregistrare['nr']}' nu e de forma ST... și nu există în foaia "
+                             f"'{cfg['foaie']}'. Pare o ofertă de test: șterge-o din listă.")
+        rand = _rand_nou(cfg)
+    elif client_existent and not confirma_suprascriere(rand, client_existent):
         return None
     celule = {col: _valoare_tabel(inregistrare, camp) for col, camp in cfg["coloane"].items()}
+    if rand_nou:
+        celule[cfg["col_nr"]] = inregistrare["nr"]
     coloane = sorted(celule, key=_index_coloana)
     grupuri = [[coloane[0]]]                                   # coloane alăturate -> o singură scriere
     for col in coloane[1:]:
@@ -2134,7 +2156,8 @@ class AplicatieOferte:
         self.intrari = {}
         campuri = [
             ("Client:", "GEP"), ("Nume Proiect:", "Proiect X"),
-            ("Nr. proiect:", NR_PROIECT_IMPLICIT.format(an_luna=datetime.now().strftime("%Y%m"))),
+            # cu Drive-ul conectat rămâne gol: nr. de contract se ia automat din BESS_Proposals
+            ("Nr. proiect:", "" if DRIVE is not None else NR_PROIECT_IMPLICIT.format(an_luna=datetime.now().strftime("%Y%m"))),
             ("Locație:", "București, România"),
             ("Capacitate (MWh):", "20"), ("Putere (MW):", "10"), ("Valoare EMS (USD):", "3500"),
             ("Valoare ENG (USD):", "0"), ("Adaos Comercial (Margin):", "1.10"), ("Curs USD/EUR:", "0.89"),
@@ -2198,9 +2221,7 @@ class AplicatieOferte:
 
         self.btn = tk.Button(root, text="Previzualizare și generare", font=("Helvetica", 12, "bold"),
                              command=self.previzualizeaza, **STIL_BUTON)
-        self.btn.pack(pady=(15, 5), fill="x", padx=20)
-        tk.Button(root, text="📋 Trece o ofertă verificată în BESS_Proposals…", command=self.dialog_tabel)\
-            .pack(pady=(0, 10), fill="x", padx=20)
+        self.btn.pack(pady=15, fill="x", padx=20)
 
         self.lbl_status = ttk.Label(root, text="Aștept date...", foreground="gray")
         self.lbl_status.pack()
@@ -2268,9 +2289,11 @@ class AplicatieOferte:
         self.lbl_tabel = ttk.Label(grup, text="", foreground="gray", wraplength=300, justify="left")
         self.lbl_tabel.grid(row=5, column=0, columnspan=2, sticky="w", padx=5, pady=4)
         ttk.Label(grup, foreground="gray", wraplength=300, justify="left",
-                  text="Generarea NU scrie nimic în tabel. După ce verifici oferta, folosește butonul "
-                       "„Trece o ofertă verificată în BESS_Proposals” de jos.").grid(row=6, column=0, columnspan=2,
-                                                                                    sticky="w", padx=5, pady=4)
+                  text="Dacă „Nr. proiect” e gol, nr. de contract se ia automat din tabel. Generarea NU scrie "
+                       "nimic în tabel: după ce verifici oferta, apasă butonul de mai jos.")\
+            .grid(row=6, column=0, columnspan=2, sticky="w", padx=5, pady=4)
+        tk.Button(grup, text="📋 Trece o ofertă verificată în BESS_Proposals…", command=self.dialog_tabel,
+                  **STIL_BUTON).grid(row=7, column=0, columnspan=2, sticky="we", padx=5, pady=(4, 8))
 
     def ia_nr_contract(self):
         """Pune în 'Nr. proiect' primul nr. de contract liber din foaia țării alese."""
@@ -2279,22 +2302,22 @@ class AplicatieOferte:
             return
         try:
             self.status("Caut nr. de contract liber în BESS_Proposals...")
-            nr = nr_contract_liber(self.combo_tara.get())
+            nr, rand_nou = nr_contract_liber(self.combo_tara.get())
         except Exception as e:
             self.lbl_tabel.config(text=f"Nu am putut citi BESS_Proposals: {e}", foreground="red")
             self.status("Aștept date...", "gray")
             return
         self.status("Aștept date...", "gray")
+        foaie = TABELE_OFERTE[self.combo_tara.get()]["foaie"]
         if not nr:
-            self.lbl_tabel.config(text=f"Nu mai există nr. de contract liber în foaia "
-                                       f"'{TABELE_OFERTE[self.combo_tara.get()]['foaie']}'. Adaugă numere noi în "
-                                       "tabel.", foreground="red")
+            self.lbl_tabel.config(text=f"Nu găsesc niciun nr. de contract ST în foaia '{foaie}'.", foreground="red")
             return
         camp = self.intrari["Nr. proiect:"]
         camp.delete(0, "end")
         camp.insert(0, nr)
-        self.lbl_tabel.config(text=f"Nr. de contract liber: {nr} (foaia "
-                                   f"'{TABELE_OFERTE[self.combo_tara.get()]['foaie']}')", foreground="green")
+        self.lbl_tabel.config(text=f"Nr. de contract: {nr} (foaia '{foaie}'" +
+                                   (", rând nou după ultimul din tabel)" if rand_nou else ", rând pregătit în tabel)"),
+                              foreground="green")
 
     def _verifica_nr_contract(self, intrari):
         """Înainte de generare: nr. de contract există în tabel și e liber (sau al aceluiași client)?"""
@@ -2307,10 +2330,8 @@ class AplicatieOferte:
             return messagebox.askyesno("Atenție", f"Nu am putut verifica nr. de contract în BESS_Proposals:\n{e}"
                                                   "\n\nContinui oricum?")
         foaie = TABELE_OFERTE[tara]["foaie"]
-        if gasit is None:
-            return messagebox.askyesno(
-                "Nr. de contract", f"Nr. {intrari['nr_proiect']} NU există în foaia '{foaie}' din BESS_Proposals.\n\n"
-                "Oferta se poate genera (ex. ca test), dar nu va putea fi trecută în tabel.\n\nContinui?")
+        if gasit is None:                    # nr. nou (va primi un rând nou la trecerea în tabel)
+            return True
         rand, client = gasit
         if client and client.strip().lower() != intrari["client"].strip().lower():
             return messagebox.askyesno(
@@ -2478,6 +2499,9 @@ class AplicatieOferte:
     def previzualizeaza(self):
         try:
             self.status("Verific datele...")
+            nr_scris = self.intrari["Nr. proiect:"].get().strip()
+            if DRIVE is not None and (not nr_scris or "XXX" in nr_scris.upper()):
+                self.ia_nr_contract()             # nr. de contract automat din BESS_Proposals
             intrari = self.citeste_intrari()
             erori, avert = valideaza(intrari)
             if erori:
