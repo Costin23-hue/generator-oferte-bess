@@ -117,9 +117,10 @@ KVA_CONSUM_SKID = 50
 # Necesar = baterii x kVA/baterie + skiduri x KVA_CONSUM_SKID; ce nu acoperă skidurile se acoperă automat cu
 # trafo extern (cel mai ieftin din 'Auxiliary Transformer'), inclus în compararea prețurilor skidurilor.
 COLOANA_AUX_PCS = "Aux trafo kVA"
-# Trafo auxiliar: din foaia 'Auxiliary Transformer' se iau doar rândurile cu acest text în 'Detail';
-# puterea (kVA) se citește din nume (ex. '1250 KVA Aux transformer'); prețul e total (cu transport).
-TRAFO_FILTRU = "aux transformer"
+# Trafo auxiliar: din foaia 'Auxiliary Transformer' se iau toate rândurile cu putere (kVA) în 'Detail' și preț
+# (ex. '1250 KVA Aux transformer', '450kVA 690V/400V ... TRAFO'); prețul: DAP dacă există, altfel EXW.
+# TRAFO_FILTRU = text obligatoriu în 'Detail' ("" = toate rândurile).
+TRAFO_FILTRU = ""
 
 ORE_MIN, ORE_MAX = 0.5, 8                # raport MWh/MW considerat normal
 ADAOS_MIN, ADAOS_MAX = 1.0, 2.0
