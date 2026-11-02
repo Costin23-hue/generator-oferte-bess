@@ -553,7 +553,8 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
     baterie_text = brand + model baterie (pentru regula REPT -> doar skiduri TBEA, conectare pe rack).
     Pentru fiecare skid: necesar aux = baterii x kva_baterie + skiduri x KVA_CONSUM_SKID; ce nu acoperă trafo-ul
     aux din skid se acoperă cu trafo extern, iar costul lui intră în comparație (cost_total).
-    forteaza_trafo: trafo extern și când skidul acoperă tot (dimensionat pentru tot necesarul)."""
+    forteaza_trafo: True = trafo extern și când skidul acoperă tot (dimensionat pentru tot necesarul);
+    "fara" = niciodată trafo extern (bifa „Fără trafo aux extern”); False = automat."""
     trafo_pricing = variante_trafo(date["aux"]) if date.get("aux") is not None else []
     df_skid, df_pcs = date["skid"], date["pcs"]
     c_brand = df_skid.columns[SKID_COL_BRAND]
@@ -711,7 +712,13 @@ def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_prici
     o["kva_necesar"] = nr_baterii * kva_baterie + o["nr"] * KVA_CONSUM_SKID
     o["kva_acoperit"] = o["nr"] * aux_skid
     o["kva_lipsa"] = max(0.0, o["kva_necesar"] - o["kva_acoperit"])
-    o["kva_trafo"] = o["kva_necesar"] if forteaza_trafo and o["kva_lipsa"] == 0 else o["kva_lipsa"]
+    o["fara_trafo"] = forteaza_trafo == "fara"
+    if o["fara_trafo"]:
+        o["kva_trafo"] = 0.0                                         # exclus manual
+    elif forteaza_trafo and o["kva_lipsa"] == 0:
+        o["kva_trafo"] = o["kva_necesar"]
+    else:
+        o["kva_trafo"] = o["kva_lipsa"]
     o["trafo"] = alege_trafo(trafo_pricing, o["kva_trafo"])
     o["trafo_lipsa_din_pricing"] = o["kva_trafo"] > 0 and o["trafo"] is None
     o["cost_total"] = o["pret_total"] + (o["trafo"]["cost"] if o["trafo"] else 0)
@@ -721,7 +728,10 @@ def text_aux(o):
     """'aux: necesar 250 kVA (4 baterii + 1 skid), skid acoperă 200 kVA -> trafo extern: 1 x 400 KVA ... = 30.000 $'."""
     text = (f"aux: necesar {o['kva_necesar']:g} kVA (baterii + skid), "
             + (f"skidul acoperă {o['kva_acoperit']:g} kVA" if o["kva_acoperit"] else "skid fără trafo aux") + " -> ")
-    if o["trafo"]:
+    if o.get("fara_trafo"):
+        text += ("fără trafo extern (exclus manual" +
+                 (f"; ⚠ rămân neacoperiți {o['kva_lipsa']:g} kVA)" if o["kva_lipsa"] else ")"))
+    elif o["trafo"]:
         text += f"trafo extern: {o['trafo']['cant']} x {o['trafo']['nume']} = {o['trafo']['cost']:,.0f} $"
     elif o.get("trafo_lipsa_din_pricing"):
         text += f"⚠ e nevoie de trafo extern ({o['kva_trafo']:g} kVA), dar nu e niciunul în Pricing"
@@ -1990,10 +2000,16 @@ class AplicatieOferte:
         self.combo_poc.current(0)
         self.combo_poc.grid(row=r + 4, column=1, sticky="e", pady=5)
 
-        self.foloseste_aux = tk.BooleanVar()
-        ttk.Checkbutton(frame, text="Forțează trafo aux extern (altfel se adaugă automat doar dacă e nevoie)",
-                        variable=self.foloseste_aux)\
-            .grid(row=r + 5, column=0, columnspan=2, pady=10, sticky="w")
+        # Trafo aux extern: nicio bifă = automat (doar unde skidul nu acoperă consumul); cele două bife se exclud
+        self.foloseste_aux, self.fara_aux = tk.BooleanVar(), tk.BooleanVar()
+        ttk.Checkbutton(frame, text="Forțează trafo aux extern (la toate skidurile)", variable=self.foloseste_aux,
+                        command=lambda: self.foloseste_aux.get() and self.fara_aux.set(False))\
+            .grid(row=r + 5, column=0, columnspan=2, pady=(10, 2), sticky="w")
+        ttk.Checkbutton(frame, text="Fără trafo aux extern (nu se adaugă deloc)", variable=self.fara_aux,
+                        command=lambda: self.fara_aux.get() and self.foloseste_aux.set(False))\
+            .grid(row=r + 6, column=0, columnspan=2, pady=(2, 10), sticky="w")
+        ttk.Label(frame, text="Fără nicio bifă: trafo aux extern adăugat automat doar unde skidul nu acoperă consumul.",
+                  foreground="gray").grid(row=r + 7, column=0, columnspan=2, sticky="w")
 
         self.btn = tk.Button(root, text="Previzualizare și generare", font=("Helvetica", 12, "bold"),
                              command=self.previzualizeaza, **STIL_BUTON)
@@ -2036,6 +2052,10 @@ class AplicatieOferte:
                     e.insert(0, implicit)
                     e.grid(row=i, column=1, padx=5, pady=3)
                     self.manual[cheie][camp] = e
+
+    def _mod_trafo(self):
+        """'fara' / True (forțat) / False (automat), după cele două bife."""
+        return "fara" if self.fara_aux.get() else bool(self.foloseste_aux.get())
 
     def citeste_manual(self, cheie):
         return {camp: (w.get() if isinstance(w, tk.BooleanVar) else w.get().strip())
@@ -2124,7 +2144,7 @@ class AplicatieOferte:
             nr_cerut = self.combo_nr_skid.get()
             p = pregateste_oferta(date, self.baterii_map, intrari, self.combo_baterie.get(),
                                   self.combo_incoterm.get(), self.combo_brand.get(),
-                                  None if nr_cerut == AUTO_SKID else int(nr_cerut), self.foloseste_aux.get(),
+                                  None if nr_cerut == AUTO_SKID else int(nr_cerut), self._mod_trafo(),
                                   manual_bat=self.citeste_manual("bat"), manual_skid=self.citeste_manual("skid"))
             baterie, nr_baterii = p["baterie"], p["nr_baterii"]
             optiuni, motive, lista, exact = p["optiuni"], p["motive"], p["lista"], p["exact"]
@@ -2171,8 +2191,10 @@ class AplicatieOferte:
                   f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"))
         kva_bat = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
         txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA + "
-                f"{KVA_CONSUM_SKID:g} kVA / skid; trafo-ul aux extern se adaugă automat unde skidul nu acoperă"
-                + (" (forțat la toate opțiunile)" if self.foloseste_aux.get() else ""))
+                f"{KVA_CONSUM_SKID:g} kVA / skid; "
+                + {"fara": "trafo aux extern EXCLUS (bifa „Fără trafo aux extern”)",
+                   True: "trafo aux extern forțat la toate opțiunile"}.get(
+                    self._mod_trafo(), "trafo-ul aux extern se adaugă automat unde skidul nu acoperă"))
         ttk.Label(win, text=txt, justify="left").pack(padx=15, pady=10, anchor="w")
 
         var = tk.IntVar(value=0)
