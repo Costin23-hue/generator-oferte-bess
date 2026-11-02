@@ -1000,7 +1000,9 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
         # Trafo auxiliar extern: nr. bucăți (C7 = B21) îl calculează Excelul, în blocul 'CALCUL TRAFO AUXILIAR'.
         # B19 = kVA de acoperit cu trafo extern (necesar baterii + skiduri minus trafo-ul aux din skid).
         sh.range("A7").value = trafo["nume"] if trafo else "aux trafo"
-        sh.range("B7").value = trafo["kva"] if trafo else None   # puterea trafo-ului ales (kVA)
+        # B20 = puterea unui trafo; B7 = puterea totală = putere unit x nr. trafo (C7 = B21, calculat de Excel)
+        sh.range("B20").value = trafo["kva"] if trafo else None
+        sh.range("B7").formula = "=B20*C7" if trafo else ""
         sh.range("D7").value = trafo["pret"] if trafo else 0
         sh.range("B17").value = 1 if trafo else 0
         sh.range("B18").value = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
