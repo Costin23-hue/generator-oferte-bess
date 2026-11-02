@@ -88,6 +88,11 @@ CAPACITATE_BATERIE_FALLBACK = 5.015      # MWh, folosită doar dacă nu se găse
 # Câte intrări DC ocupă o baterie pe skid (limitele Min/Max din PCS - MV skid.xlsx sunt în intrări DC)
 DC_INPUTURI_PER_BATERIE = 2
 DC_INPUTURI_PER_BRAND = {"Sinexcel": 1}   # excepții pe brand de skid (Sinexcel: 1 intrare DC / baterie)
+# Compatibilitate baterii <-> skid, după numărul de PCS (nr. skiduri x 'no / frame' din 'PCS - MV skid.xlsx',
+# sau puterea skidului / 'PCS power' dacă 'no / frame' lipsește): o baterie alimentează 1 PCS sau 2 PCS
+# (ex. 4 baterii pe 8 PCS = 1:2; 8 baterii pe 8 PCS = 1:1). Coloanele Min/Max intrări se folosesc doar
+# când numărul de PCS nu se cunoaște și la REPT pe TBEA (conectare pe rack).
+PCS_PE_BATERIE = (1, 2)
 
 # Baterii REPT: merg doar pe skidurile de mai jos. Modul de conectare pe brand de skid:
 #   "rack" = rack-urile direct la PCS (TBEA): o intrare ia 1 rack (1:1) sau 2 rack-uri (1:2).
@@ -641,38 +646,62 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
         min_total, max_total = acceptate[0], acceptate[-1]
 
         pret = numar(skid.get(c_pret))
-        variante = variante_intrari(baterie_text, skid.get(c_brand, ""), nr_baterii)
-        potrivite = [v for v in variante if any(abs(v[0] - x) < 1e-9 for x in acceptate)]
-        nr_intrari, conexiune = potrivite[0] if potrivite else variante[0]
-        if not potrivite:
-            if len(variante) > 1:
-                nr_intrari = " sau ".join(f"{v[0]:g}" for v in variante)
-                text = f"{nume} ({nr_skiduri} buc: {variante[0][1].split(',')[0]} -> {nr_intrari} intrări, " \
-                       f"acceptă {text_intrari(acceptate)})"
+        acceptate_text = text_intrari(acceptate)
+        rack = e_baterie_rack(baterie_text) and mod_conectare_rack(skid.get(c_brand, "")) == "rack"
+        pcs_pe_skid = numar(skid.get("no / frame"))
+        if pcs_pe_skid <= 0 and numar(skid.get("PCS power")) > 0:
+            pcs_pe_skid = round(putere / numar(skid.get("PCS power")))
+        if not rack and pcs_pe_skid > 0:
+            # Regula PCS: 1 baterie -> 1 PCS sau 1 baterie -> 2 PCS
+            nr_pcs = nr_skiduri * int(pcs_pe_skid)
+            raport = next((k for k in PCS_PE_BATERIE if nr_pcs == k * nr_baterii), None)
+            acceptate_text = " sau ".join(f"1 baterie : {k} PCS" for k in PCS_PE_BATERIE)
+            if raport is None:
+                text = f"{nume} ({nr_skiduri} buc: {nr_baterii} baterii pe {nr_pcs} PCS)"
                 motive["respinse"].append({
                     "tip": nume, "nr": nr_skiduri, "putere_totala": nr_skiduri * putere,
                     "pret_total": nr_skiduri * pret,
-                    "motiv": f"{nr_intrari} intrări (1:1 / 1:2), skidul acceptă {text_intrari(acceptate)}",
+                    "motiv": f"{nr_baterii} baterii pe {nr_pcs} PCS: nu e {acceptate_text}",
                 })
                 motive["intermediare"].append(text)
                 if abs(nr_skiduri * putere - mw) < 0.01:
                     motive["exacte_respinse"].append(text)
                 continue
-            text = f"{nume} ({nr_skiduri} buc: {nr_intrari:g} intrări, acceptă {text_intrari(acceptate)})"
-            motive["respinse"].append({
-                "tip": nume, "nr": nr_skiduri, "putere_totala": nr_skiduri * putere,
-                "pret_total": nr_skiduri * pret,
-                "motiv": f"{nr_intrari:g} intrări DC, skidul acceptă {text_intrari(acceptate)}",
-            })
-            if nr_intrari < min_total:
-                motive["prea_putine"].append(text)
-            elif nr_intrari > max_total:
-                motive["prea_multe"].append(text)
-            else:
-                motive["intermediare"].append(text)
-            if abs(nr_skiduri * putere - mw) < 0.01:
-                motive["exacte_respinse"].append(text)
-            continue
+            nr_intrari = nr_pcs
+            conexiune = f"{nr_baterii} baterii -> {nr_pcs} PCS (1 baterie : {raport} PCS)"
+        else:
+            variante = variante_intrari(baterie_text, skid.get(c_brand, ""), nr_baterii)
+            potrivite = [v for v in variante if any(abs(v[0] - x) < 1e-9 for x in acceptate)]
+            nr_intrari, conexiune = potrivite[0] if potrivite else variante[0]
+            if not potrivite:
+                if len(variante) > 1:
+                    nr_intrari = " sau ".join(f"{v[0]:g}" for v in variante)
+                    text = f"{nume} ({nr_skiduri} buc: {variante[0][1].split(',')[0]} -> {nr_intrari} intrări, " \
+                           f"acceptă {text_intrari(acceptate)})"
+                    motive["respinse"].append({
+                        "tip": nume, "nr": nr_skiduri, "putere_totala": nr_skiduri * putere,
+                        "pret_total": nr_skiduri * pret,
+                        "motiv": f"{nr_intrari} intrări (1:1 / 1:2), skidul acceptă {text_intrari(acceptate)}",
+                    })
+                    motive["intermediare"].append(text)
+                    if abs(nr_skiduri * putere - mw) < 0.01:
+                        motive["exacte_respinse"].append(text)
+                    continue
+                text = f"{nume} ({nr_skiduri} buc: {nr_intrari:g} intrări, acceptă {text_intrari(acceptate)})"
+                motive["respinse"].append({
+                    "tip": nume, "nr": nr_skiduri, "putere_totala": nr_skiduri * putere,
+                    "pret_total": nr_skiduri * pret,
+                    "motiv": f"{nr_intrari:g} intrări DC, skidul acceptă {text_intrari(acceptate)}",
+                })
+                if nr_intrari < min_total:
+                    motive["prea_putine"].append(text)
+                elif nr_intrari > max_total:
+                    motive["prea_multe"].append(text)
+                else:
+                    motive["intermediare"].append(text)
+                if abs(nr_skiduri * putere - mw) < 0.01:
+                    motive["exacte_respinse"].append(text)
+                continue
 
         optiuni.append({
             "brand": str(skid.get(c_brand, "")),
@@ -683,7 +712,8 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
             "intrari": nr_intrari,
             "min_intrari": min_total,
             "max_intrari": max_total,
-            "acceptate": text_intrari(acceptate),
+            "acceptate": acceptate_text,
+            "regula_pcs": not rack and pcs_pe_skid > 0,
             "pret_unit": pret,
             "pret_total": nr_skiduri * pret,
             "transport": numar(skid.get(c_trans)),
@@ -751,9 +781,13 @@ def descriere_skid(o, mw=None):
         return (f"{nume}: {o['nr']} buc x {o['putere_unit']:g} MW = {o['putere_totala']:g} MW | {pret}{marcaj}"
                 f"\n    ✎ skid introdus manual - compatibilitatea cu bateriile NU e verificată de program"
                 f"\n    {text_aux(o)}")
+    if o.get("regula_pcs"):
+        legare = f"\n    conectare: {o['conexiune']}"
+    else:
+        legare = (f"\n    intrări DC: {o['intrari']:g} (acceptă {o['acceptate']})"
+                  + (f" | {o['conexiune']}" if o.get("conexiune") else ""))
     return (f"{nume}: {o['nr']} buc x {o['putere_unit']:g} MW = {o['putere_totala']:g} MW | {pret}{marcaj}"
-            f"\n    intrări DC: {o['intrari']:g} (acceptă {o['acceptate']})"
-            + (f" | {o['conexiune']}" if o.get("conexiune") else "")
+            + legare
             + (f" - limite luate de la '{o['similar']}'" if o.get("similar") else "")
             + f"\n    {text_aux(o)}")
 
@@ -800,7 +834,7 @@ def mesaj_fara_skid(mw, nr_baterii, brand, motive):
     if motive["prea_multe"]:
         linii.append("- Prea multe intrări DC pentru: " + "; ".join(motive["prea_multe"][:5]))
     if motive["intermediare"]:
-        linii.append("- Număr de intrări neacceptat (skidul acceptă doar valorile listate): "
+        linii.append("- Conectare baterii - skid neacceptată (vezi motivul la fiecare): "
                      + "; ".join(motive["intermediare"][:5]))
     linii += ["", "Ce poți schimba: brandul (încearcă 'Oricare'), MW sau MWh."]
     return "\n".join(linii)
