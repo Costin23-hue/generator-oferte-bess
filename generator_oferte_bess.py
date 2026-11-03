@@ -105,6 +105,10 @@ FISIER_EXCEL_TEMPLATE = "Project Proposal TAMPLATE.xlsx"
 FISIER_PPT_TEMPLATE = "TEMPLATE BESS.pptx"
 
 BATERIE_IMPLICITA = "JKE-5015K-2H-LAA"
+# Bateriile afișate în listă: doar modelele care conțin unul dintre aceste texte (Jinko 5,015 și 6,25 MWh, REPT)
+BATERII_IN_LISTA = ("5015", "6250", "REPT")
+# "Auto": se încearcă toate bateriile din listă (cu durata potrivită proiectului) și se alege oferta cea mai ieftină
+OPTIUNE_AUTO_BATERIE = "Auto (cea mai ieftină)"
 CAPACITATE_BATERIE_FALLBACK = 5.015      # MWh, folosită doar dacă nu se găsește în Excel
 
 # Câte intrări DC ocupă o baterie pe skid (limitele Min/Max din PCS - MV skid.xlsx sunt în intrări DC)
@@ -1762,10 +1766,51 @@ def optiune_skid_manuala(date, mw, nr_baterii, kva_baterie, forteaza_trafo, nr_f
     return o
 
 
+def baterii_din_lista(baterii_map):
+    """Modelele din Pricing afișate în listă (BATERII_IN_LISTA)."""
+    return [b for b in baterii_map if any(t.lower() in b.lower() for t in BATERII_IN_LISTA)]
+
+
+def ore_baterie(model):
+    """Durata bateriei din numele modelului: 'JKE-5015K-4H-LAA' -> 4; necunoscută -> None."""
+    m = re.search(r"-(\d+(?:\.\d+)?)H-", str(model), re.I)
+    return float(m.group(1)) if m else None
+
+
+def cost_estimativ(p):
+    """Costul de achiziție al variantei celei mai ieftine: baterii (+ transport) + skid (+ transport) + trafo extern."""
+    b, o = p["baterie"], p["lista"][0]
+    return (p["nr_baterii"] * (b["cap"] * b["pret"] + b["transport"])
+            + o["cost_total"] + o["nr"] * (o["transport"] + o["com"]))
+
+
 def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand, nr_fix, cu_trafo,
                       manual_bat=None, manual_skid=None):
     """Alege bateria, skidurile compatibile (de la cel mai ieftin) și trafo-ul. Nu generează fișiere.
-    model_baterie / brand = OPTIUNE_MANUALA_... -> componenta din manual_bat / manual_skid."""
+    model_baterie / brand = OPTIUNE_MANUALA_... -> componenta din manual_bat / manual_skid;
+    model_baterie = OPTIUNE_AUTO_BATERIE -> bateria din listă cu oferta cea mai ieftină."""
+    if model_baterie == OPTIUNE_AUTO_BATERIE:
+        ore_proiect = intrari["mwh"] / intrari["mw"]
+        variante, motive_auto = [], []
+        for model in baterii_din_lista(baterii_map):
+            ore = ore_baterie(model)
+            if ore and ore > ore_proiect + 0.05:          # ex. baterie 4H nu poate livra un proiect de 2 ore
+                motive_auto.append(f"{model}: baterie {ore:g}H, proiectul e de {ore_proiect:.2g} ore")
+                continue
+            try:
+                p = pregateste_oferta(date, baterii_map, intrari, model, incoterm, brand, nr_fix, cu_trafo,
+                                      manual_bat, manual_skid)
+            except ValueError as e:
+                motive_auto.append(f"{model}: {str(e).splitlines()[0]}")
+                continue
+            variante.append((cost_estimativ(p), model, p))
+        if not variante:
+            raise ValueError("Auto: nicio baterie din listă nu se potrivește proiectului.\n- " + "\n- ".join(motive_auto))
+        variante.sort(key=lambda v: v[0])
+        p = variante[0][2]
+        p["auto_comparatie"] = [f"{model}: {bani_eu(cost, 0)} $" for cost, model, _ in variante]
+        p["auto_excluse"] = motive_auto
+        return p
     if model_baterie == OPTIUNE_MANUALA_BATERIE:
         baterie = baterie_manuala(manual_bat or {}, incoterm)
     elif model_baterie in baterii_map:
@@ -2150,7 +2195,7 @@ class AplicatieOferte:
                 salveaza_setari(dict(citeste_setari(), pricing=cale))
                 self.date = incarca_date()
             self.baterii_map = lista_baterii(self.date["bat"])
-            baterii = list(self.baterii_map) or baterii
+            baterii = baterii_din_lista(self.baterii_map) or baterii
             branduri = ["Oricare"] + self._branduri_skid()
         except Exception as e:
             messagebox.showwarning("Atenție", f"Nu am putut citi fișierele Excel la pornire:\n{e}")
@@ -2184,9 +2229,10 @@ class AplicatieOferte:
 
         r = len(campuri)
         ttk.Label(frame, text="Model baterie:").grid(row=r, column=0, sticky="w", pady=5)
-        self.combo_baterie = ttk.Combobox(frame, values=baterii + [OPTIUNE_MANUALA_BATERIE], state="readonly",
+        self.combo_baterie = ttk.Combobox(frame, values=[OPTIUNE_AUTO_BATERIE] + baterii + [OPTIUNE_MANUALA_BATERIE],
+                                          state="readonly",
                                           width=40)
-        self.combo_baterie.set(next((b for b in baterii if b.startswith(BATERIE_IMPLICITA)), baterii[0]))
+        self.combo_baterie.set(OPTIUNE_AUTO_BATERIE)
         self.combo_baterie.grid(row=r, column=1, sticky="e", pady=5)
 
         ttk.Label(frame, text="Brand Skid preferat:").grid(row=r + 1, column=0, sticky="w", pady=5)
@@ -2522,7 +2568,8 @@ class AplicatieOferte:
                 self.status("Pricing.xlsx s-a modificat, îl recitesc...")
                 self.date = incarca_date()
                 self.baterii_map = lista_baterii(self.date["bat"])
-                self.combo_baterie["values"] = list(self.baterii_map) + [OPTIUNE_MANUALA_BATERIE]
+                self.combo_baterie["values"] = ([OPTIUNE_AUTO_BATERIE] + baterii_din_lista(self.baterii_map)
+                                                + [OPTIUNE_MANUALA_BATERIE])
                 self.combo_brand["values"] = ["Oricare"] + self._branduri_skid() + [OPTIUNE_MANUALA_SKID]
                 self.combo_poc["values"] = self._valori_poc()
                 self._afiseaza_sursa()
@@ -2541,6 +2588,7 @@ class AplicatieOferte:
                 self.status("Anulat.", "gray")
                 return
 
+            self._auto_info = (p.get("auto_comparatie"), p.get("auto_excluse"))
             alegere = self.dialog_previzualizare(intrari, baterie, nr_baterii, lista, exact,
                                                  raport_skiduri(optiuni, motive))
             if alegere is None:
@@ -2585,7 +2633,11 @@ class AplicatieOferte:
                 + {"fara": "trafo aux extern EXCLUS (bifa „Fără trafo aux extern”)",
                    True: "trafo aux extern forțat la toate opțiunile"}.get(
                     self._mod_trafo(), "trafo-ul aux extern se adaugă automat unde skidul nu acoperă"))
-        ttk.Label(win, text=txt, justify="left").pack(padx=15, pady=10, anchor="w")
+        comparate, excluse = getattr(self, "_auto_info", (None, None))
+        if comparate:
+            txt += ("\n\nAuto - baterii comparate (cost achiziție, cea mai ieftină prima): " + "; ".join(comparate)
+                    + ("\nExcluse: " + "; ".join(excluse) if excluse else ""))
+        ttk.Label(win, text=txt, justify="left", wraplength=900).pack(padx=15, pady=10, anchor="w")
 
         var = tk.IntVar(value=0)
         bold = ("Helvetica", 10, "bold")
