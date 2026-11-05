@@ -109,6 +109,8 @@ BATERIE_IMPLICITA = "JKE-5015K-2H-LAA"
 BATERII_IN_LISTA = ("5015", "6250", "REPT")
 # "Auto": se încearcă toate bateriile din listă (cu durata potrivită proiectului) și se alege oferta cea mai ieftină
 OPTIUNE_AUTO_BATERIE = "Auto (cea mai ieftină)"
+# Durata bateriilor care nu au '-2H-' / '-4H-' în nume
+ORE_BATERIE_FARA_COD = {"REPT": 4}
 CAPACITATE_BATERIE_FALLBACK = 5.015      # MWh, folosită doar dacă nu se găsește în Excel
 
 # Câte intrări DC ocupă o baterie pe skid (limitele Min/Max din PCS - MV skid.xlsx sunt în intrări DC)
@@ -165,6 +167,8 @@ NR_OPTIUNI_SKID = 5
 # la orice altă tensiune, foaia ale cărei nume conține "POC" ("MV SKID for different POC"),
 # doar skidurile care au acea tensiune în nume (ex. "SES4H-5000-EX-MV 10KV SF6 switchgear").
 POC_IMPLICIT_KV = 20
+# Branduri de skid disponibile doar la 20 kV (România); la alt POC nu se iau în calcul
+BRANDURI_DOAR_POC_IMPLICIT = ("TBEA",)
 FOAIE_SKID = "MV SKID"
 FOAIE_SKID_POC_CONTINE = "poc"
 
@@ -185,7 +189,7 @@ CAMPURI_BATERIE_MANUALA = [
     ("brand", "Brand / furnizor:", ""), ("model", "Model:", ""), ("cap", "Capacitate / baterie (MWh):", ""),
     ("pret_ddp", "Preț DDP ($/MWh):", ""), ("pret_dap", "Preț DAP ($/MWh):", ""),
     ("transport", "Transport / container ($):", ""), ("transport_inclus", "Prețul include transportul", None),
-    ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty ($/MWh/an, opțional):", ""),
+    ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty (% din total, opțional):", ""),
     ("kva_aux", "Consum aux / baterie (kVA, gol = automat):", ""),
     (None, "Specificații pentru prezentare", None),
     ("model_cod", "Cod model (rândul Model):", ""), ("config", "Configuration:", ""), ("weight", "Weight (t):", ""),
@@ -195,7 +199,7 @@ CAMPURI_SKID_MANUAL = [
     ("putere_pcs", "Putere PCS (MW):", ""), ("pret", "Preț / skid ($):", ""),
     ("transport", "Transport / skid ($):", ""), ("transport_inclus", "Prețul include transportul", None),
     ("com", "Commissioning / skid ($):", ""), ("aux_kva", "Trafo aux inclus în skid (kVA, gol = fără):", ""),
-    ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty ($/MWh/an, opțional):", ""),
+    ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty (% din total, opțional):", ""),
 ]
 
 # Indecși de coloană (0 = A) în foile din Pricing.xlsx
@@ -370,6 +374,10 @@ def tensiuni_poc(df_poc):
     return sorted({kv for kv in (tensiune_kv(t) for t in df_poc[c_tip].dropna()) if kv})
 
 
+def doar_poc_implicit(brand):
+    return any(b.lower() in str(brand).lower() for b in BRANDURI_DOAR_POC_IMPLICIT)
+
+
 def skiduri_pentru_poc(date, poc_kv):
     """DataFrame-ul de skiduri pentru punctul de conexiune ales."""
     if abs(poc_kv - POC_IMPLICIT_KV) < 1e-9:
@@ -377,8 +385,9 @@ def skiduri_pentru_poc(date, poc_kv):
     df_poc = date.get("skid_poc")
     if df_poc is None:
         raise ValueError("Nu am găsit în Pricing.xlsx foaia 'MV SKID for different POC'.")
-    c_tip = df_poc.columns[SKID_COL_TYPE]
+    c_tip, c_brand = df_poc.columns[SKID_COL_TYPE], df_poc.columns[SKID_COL_BRAND]
     gasite = df_poc[df_poc[c_tip].map(lambda t: tensiune_kv(t) == poc_kv)]
+    gasite = gasite[~gasite[c_brand].map(lambda b: doar_poc_implicit(b))]
     if gasite.empty:
         disponibile = ", ".join(f"{kv:g} kV" for kv in tensiuni_poc(df_poc)) or "niciuna"
         raise ValueError(f"Nu avem niciun skid pentru conexiune la {poc_kv:g} kV în foaia "
@@ -1029,6 +1038,14 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
         # Etichetele din template (ex. 'Commissioning Sinexcel') primesc brandurile alese
         inlocuieste_branduri(sh, branduri_skid, skid["brand"])
         inlocuieste_branduri(sh, branduri_bat, baterie["brand"])
+
+        # Componente manuale: extra warranty = % din totalul cu transport + commissioning (K9 / K11 = $/MWh)
+        for comp, celula_pct, eticheta, total in ((baterie, "K6", f"Battery {baterie['brand']}", "(G5+G11)"),
+                                                  (skid, "K10", f"PCS {skid['brand']}", "(G6+G12)")):
+            if comp.get("manual"):
+                pct = comp.get("ext_gar_pct") or 0
+                sh.range(celula_pct).offset(0, -1).value = f"{eticheta} {pct:g}%" if pct else "fără extra warranty"
+                sh.range(celula_pct).formula = f"={total}*{pct / 100:g}" if pct else "=0"
 
         app_xl.calculate()
         rezultat = {
@@ -1714,6 +1731,15 @@ def _valoare_manuala(m, cheie, eticheta, implicit=None, bani=False):
         raise ValueError(f"Câmpul '{eticheta}' din Componente manuale nu e un număr: {m.get(cheie)}")
 
 
+def _procent_manual(m):
+    """Extra warranty manual, în %: '3', '3%', '2,5' -> 3 / 2.5; gol -> 0 (fără extra warranty)."""
+    pct = _valoare_manuala(dict(m, ext_gar=str(m.get("ext_gar", "")).replace("%", "")),
+                           "ext_gar", "Extra warranty (%)", 0.0)
+    if not 0 <= pct <= 100:
+        raise ValueError("Extra warranty manual trebuie să fie un procent între 0 și 100.")
+    return pct
+
+
 def _text_garantie(text):
     text = str(text or "").strip()
     try:
@@ -1740,7 +1766,7 @@ def baterie_manuala(m, incoterm):
         "coloana_pret": "manual", "data": "introdus manual", "rand_excel": "-",
         "transport": 0.0 if m.get("transport_inclus") else _valoare_manuala(m, "transport", "Transport", 0.0, True),
         "garantie": _text_garantie(m.get("garantie")),
-        "manual": True, "ext_gar": _valoare_manuala(m, "ext_gar", "Extra warranty", 0.0, True),
+        "manual": True, "ext_gar_pct": _procent_manual(m),
         "kva_aux": _valoare_manuala(m, "kva_aux", "Consum aux / baterie", kva_aux_baterie(cap)),
         "specs": {"model": str(m.get("model_cod", "")).strip() or m["model"].strip(),
                   "config": str(m.get("config", "")).strip(), "weight": greutate},
@@ -1763,7 +1789,7 @@ def optiune_skid_manuala(date, mw, nr_baterii, kva_baterie, forteaza_trafo, nr_f
          "com": _valoare_manuala(m, "com", "Commissioning / skid", 0.0, True), "similar": "", "conexiune": "",
          "putere_pcs": _valoare_manuala(m, "putere_pcs", "Putere PCS (MW)", putere),
          "garantie": _text_garantie(m.get("garantie")),
-         "manual": True, "ext_gar": _valoare_manuala(m, "ext_gar", "Extra warranty", 0.0, True)}
+         "manual": True, "ext_gar_pct": _procent_manual(m)}
     trafo_pricing = variante_trafo(date["aux"]) if date.get("aux") is not None else []
     calcul_aux(o, _valoare_manuala(m, "aux_kva", "Trafo aux inclus", 0.0), nr_baterii, kva_baterie,
                forteaza_trafo, trafo_pricing)
@@ -1841,7 +1867,9 @@ def baterii_din_lista(baterii_map):
 def ore_baterie(model):
     """Durata bateriei din numele modelului: 'JKE-5015K-4H-LAA' -> 4; necunoscută -> None."""
     m = re.search(r"-(\d+(?:\.\d+)?)H-", str(model), re.I)
-    return float(m.group(1)) if m else None
+    if m:
+        return float(m.group(1))
+    return next((ore for nume, ore in ORE_BATERIE_FARA_COD.items() if nume.lower() in str(model).lower()), None)
 
 
 def cost_estimativ(p):
@@ -1892,6 +1920,13 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
         motive = {"brand": 0, "putere": 0, "prea_putine": [], "prea_multe": [], "intermediare": [],
                   "exacte_respinse": [], "respinse": [], "fara_pcs": [], "incompatibil": 0}
     else:
+        if abs(intrari["poc_kv"] - POC_IMPLICIT_KV) > 1e-9:
+            if brand != "Oricare" and doar_poc_implicit(brand):
+                raise ValueError(f"{brand} are skiduri doar pentru POC {POC_IMPLICIT_KV} kV (România), "
+                                 f"nu pentru {intrari['poc_kv']:g} kV.")
+            if e_baterie_rack(f"{baterie['brand']} {baterie['tip']}"):
+                raise ValueError(f"Bateria {baterie['tip']} merge doar pe TBEA, care e disponibil doar "
+                                 f"la POC {POC_IMPLICIT_KV} kV (România).")
         date_poc = dict(date, skid=skiduri_pentru_poc(date, intrari["poc_kv"]))
         optiuni, motive = gaseste_skiduri(date_poc, intrari["mw"], nr_baterii, brand, nr_fix,
                                           baterie_text=f"{baterie['brand']} {baterie['tip']}",
@@ -1961,16 +1996,16 @@ def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lam
         "[BAT_WEIGHT]": baterie["specs"]["weight"],
         "[GAR_BAT]": baterie["garantie"],
         "[GAR_PCS]": skid["garantie"],
-        # componentele manuale: extra warranty introdus de mână (dacă lipsește, rândul dispare din tabel)
-        "[EXT_GAR_BAT]": bani_eu(baterie["ext_gar"] if baterie.get("manual") else rez["ext_gar_bat"]),
-        "[EXT_GAR_PCS]": bani_eu(skid["ext_gar"] if skid.get("manual") else rez["ext_gar_pcs"]),
+        # la componentele manuale K9 / K11 vin din procentul introdus (fără procent, rândul dispare din tabel)
+        "[EXT_GAR_BAT]": bani_eu(rez["ext_gar_bat"]),
+        "[EXT_GAR_PCS]": bani_eu(rez["ext_gar_pcs"]),
     }
     cale_pptx = os.path.join(folder, nume + ".pptx")
     ramase = genereaza_pptx(inlocuiri, cale_pptx,
                             fara_bat=fara_extensie(f"{baterie['brand']} {baterie['tip']}")
-                                     or bool(baterie.get("manual") and not baterie.get("ext_gar")),
+                                     or bool(baterie.get("manual") and not baterie.get("ext_gar_pct")),
                             fara_pcs=fara_extensie(skid["brand"])
-                                     or bool(skid.get("manual") and not skid.get("ext_gar")))
+                                     or bool(skid.get("manual") and not skid.get("ext_gar_pct")))
 
     status("Salvez și varianta PDF...")
     cale_pdf, eroare_pdf = os.path.join(folder, nume + ".pdf"), None
