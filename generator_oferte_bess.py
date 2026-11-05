@@ -156,11 +156,12 @@ COLOANA_AUX_PCS = "Aux trafo kVA"
 TRAFO_FILTRU = ""
 
 ORE_MIN, ORE_MAX = 0.5, 8                # raport MWh/MW considerat normal
+ADAOS_IMPLICIT, CURS_IMPLICIT = 1.10, 0.89   # valorile puse în fereastră la pornire
 ADAOS_MIN, ADAOS_MAX = 1.0, 2.0
 CURS_MIN, CURS_MAX = 0.5, 2.0
 EMS_PRAG_MWH = 15          # de la această capacitate EMS se completează automat
-EMS_AUTO = "3500"          # valoarea EMS (USD) pusă automat la capacitate >= prag
-EMS_SUB_PRAG = "6500"      # valoarea pusă automat la capacitate sub prag (dacă nu ai modificat EMS manual)
+EMS_AUTO = 3500            # valoarea EMS (USD) pusă automat la capacitate >= prag
+EMS_SUB_PRAG = 6500        # valoarea pusă automat la capacitate sub prag (dacă nu ai modificat EMS manual)
 NR_OPTIUNI_SKID = 5
 
 # Punct de conexiune (POC): la 20 kV se folosește foaia "MV SKID" (România), ca până acum;
@@ -217,6 +218,44 @@ CELULA_EXT_GAR_PCS = "K11"
 # (rândul cu [EXT_GAR_BAT] pentru baterie, cel cu [EXT_GAR_PCS] pentru skid); dacă dispar ambele, dispare tot tabelul.
 FARA_EXTENSIE_GARANTIE = ("REPT", "TBEA")
 
+# Fișierul cu regulile de mai sus, editabil fără cod: stă în folderul 'Ofertare BESS' (în Drive) și se citește la
+# pornire. Ce lipsește din el sau e gol rămâne cu valoarea din cod. Butonul "⚙ Setări" din fereastră îl creează.
+FISIER_SETARI_GENERATOR = "Setari generator.xlsx"
+FOAIE_REGULI = "Reguli"
+# (variabila din cod, ce este, tipul valorii). Tipuri: numar, intreg, text, lista (texte separate prin virgulă),
+# lista_intregi, perechi ("REPT = 4; ..."), perechi_text ("TBEA = rack; ..."), praguri ("0 = 55; 5,6 = 65").
+SETARI_EDITABILE = [
+    ("Oferta", None, None),
+    ("ADAOS_IMPLICIT", "Adaos comercial (margin) pus la pornire", "numar"),
+    ("ADAOS_MIN", "Adaos minim acceptat", "numar"),
+    ("ADAOS_MAX", "Adaos maxim acceptat", "numar"),
+    ("CURS_IMPLICIT", "Curs USD/EUR pus la pornire", "numar"),
+    ("CURS_MIN", "Curs USD/EUR minim acceptat", "numar"),
+    ("CURS_MAX", "Curs USD/EUR maxim acceptat", "numar"),
+    ("EMS_PRAG_MWH", "EMS: pragul de capacitate (MWh)", "numar"),
+    ("EMS_AUTO", "EMS (USD) la capacitate >= prag", "numar"),
+    ("EMS_SUB_PRAG", "EMS (USD) la capacitate sub prag", "numar"),
+    ("INCOTERM_IMPLICIT", "Incoterm pus la pornire (DDP sau DAP)", "text"),
+    ("ORE_MIN", "Durată proiect considerată normală: minim (ore)", "numar"),
+    ("ORE_MAX", "Durată proiect considerată normală: maxim (ore)", "numar"),
+    ("NR_OPTIUNI_SKID", "Câte variante de skid se arată în previzualizare", "intreg"),
+    ("Baterii", None, None),
+    ("BATERII_IN_LISTA", "Bateriile din listă (text conținut în model)", "lista"),
+    ("ORE_BATERIE_FARA_COD", "Durata bateriilor fără -2H- / -4H- în nume (brand = ore)", "perechi"),
+    ("KVA_AUX_PER_BATERIE", "Consum aux / baterie (de la MWh = kVA)", "praguri"),
+    ("FARA_EXTENSIE_GARANTIE", "Branduri fără extra warranty (rândul dispare din prezentare)", "lista"),
+    ("Skiduri și compatibilitate", None, None),
+    ("PCS_PE_BATERIE", "Câte PCS poate alimenta o baterie (ex. 1, 2)", "lista_intregi"),
+    ("KVA_CONSUM_SKID", "Consum aux propriu / skid (kVA)", "numar"),
+    ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),
+    ("POC_IMPLICIT_KV", "POC România (kV) = foaia 'MV SKID'", "numar"),
+    ("BRANDURI_DOAR_POC_IMPLICIT", "Branduri de skid doar la POC România", "lista"),
+    ("PUTERE_NOMINALA_SKID", "Branduri cu puterea din coloana 'Skid power'", "lista"),
+    ("SKIDURI_PENTRU_RACK", "REPT: skiduri compatibile (brand = rack sau dc)", "perechi_text"),
+    ("RACKURI_PER_BATERIE", "REPT: rack-uri / baterie", "intreg"),
+    ("DC_INPUTURI_PER_BATERIE", "Intrări DC / baterie (regula Min/Max)", "intreg"),
+]
+
 
 # ======================================================================
 # LOGICA (fără Tkinter)
@@ -229,6 +268,166 @@ def numar(valoare, implicit=0.0):
         return float(valoare)
     except (TypeError, ValueError):
         return implicit
+
+
+# ---------------- Setari generator.xlsx ----------------
+def _nr_text(x):
+    """Număr scris în stil românesc: 5.6 -> '5,6', 55.0 -> '55'."""
+    return f"{x:g}".replace(".", ",")
+
+
+def valoare_setare_text(valoare, tip):
+    """Valoarea din cod, cum se scrie în Setari generator.xlsx."""
+    if tip in ("numar", "intreg"):
+        return float(valoare) if tip == "numar" else int(valoare)
+    if tip == "text":
+        return str(valoare)
+    if tip in ("lista", "lista_intregi"):
+        return ", ".join(str(v) for v in valoare)
+    if tip == "praguri":
+        return "; ".join(f"{_nr_text(prag)} = {_nr_text(kva)}" for prag, kva in valoare)
+    return "; ".join(f"{k} = {_nr_text(v) if isinstance(v, (int, float)) else v}" for k, v in valoare.items())
+
+
+def _numar_setare(text):
+    if isinstance(text, (int, float)) and not isinstance(text, bool):
+        return float(text)
+    return float(str(text).strip().replace(" ", "").replace(",", "."))
+
+
+class _FormatSetare(ValueError):
+    pass
+
+
+def citeste_valoare_setare(valoare, tip):
+    """Valoarea din Setari generator.xlsx -> valoarea pentru cod. Ridică ValueError cu explicație."""
+    try:
+        if tip == "numar":
+            return _numar_setare(valoare)
+        if tip == "intreg":
+            n = _numar_setare(valoare)
+            if n != int(n):
+                raise ValueError
+            return int(n)
+        text = str(valoare).strip()
+        if tip == "text":
+            return text
+        bucati = [b.strip() for b in re.split(r"[;,]" if tip.startswith("lista") else r";", text) if b.strip()]
+        if tip == "lista":
+            return tuple(bucati)
+        if tip == "lista_intregi":
+            return tuple(citeste_valoare_setare(b, "intreg") for b in bucati)
+        perechi = []
+        for b in bucati:
+            cheie, egal, val = b.partition("=")
+            if not egal or not cheie.strip() or not val.strip():
+                raise ValueError
+            perechi.append((cheie.strip(), val.strip()))
+        if tip == "praguri":
+            praguri = sorted((_numar_setare(k), _numar_setare(v)) for k, v in perechi)
+            if not praguri or praguri[0][0] != 0:
+                raise _FormatSetare("primul prag trebuie să fie 0")
+            return praguri
+        if tip == "perechi":
+            return {k: _numar_setare(v) for k, v in perechi}
+        return dict(perechi)
+    except (ValueError, TypeError) as e:
+        detaliu = f" ({e})" if isinstance(e, _FormatSetare) else ""
+        formate = {"numar": "un număr (ex. 1,1)", "intreg": "un număr întreg", "lista": "texte separate prin virgulă",
+                   "lista_intregi": "numere întregi separate prin virgulă (ex. 1, 2)",
+                   "perechi": "perechi 'nume = număr' separate prin ; (ex. REPT = 4)",
+                   "perechi_text": "perechi 'nume = text' separate prin ; (ex. TBEA = rack; Kehua = dc)",
+                   "praguri": "praguri 'de la MWh = kVA' separate prin ; (ex. 0 = 55; 5,6 = 65)"}
+        raise ValueError(f"trebuie să fie {formate.get(tip, tip)}{detaliu}") from None
+
+
+def _verifica_setari_noi(noi):
+    """Verificări între setări (după citire). Returnează lista de erori."""
+    v = {nume: noi.get(nume, globals()[nume]) for nume, _, tip in SETARI_EDITABILE if tip}
+    erori = []
+    if not v["ADAOS_MIN"] <= v["ADAOS_IMPLICIT"] <= v["ADAOS_MAX"]:
+        erori.append("ADAOS_IMPLICIT trebuie să fie între ADAOS_MIN și ADAOS_MAX.")
+    if not v["CURS_MIN"] <= v["CURS_IMPLICIT"] <= v["CURS_MAX"]:
+        erori.append("CURS_IMPLICIT trebuie să fie între CURS_MIN și CURS_MAX.")
+    if v["ORE_MIN"] >= v["ORE_MAX"]:
+        erori.append("ORE_MIN trebuie să fie mai mic decât ORE_MAX.")
+    if str(v["INCOTERM_IMPLICIT"]).upper() not in INCOTERMS:
+        erori.append(f"INCOTERM_IMPLICIT trebuie să fie unul dintre: {', '.join(INCOTERMS)}.")
+    if any(m.lower() not in ("rack", "dc") for m in v["SKIDURI_PENTRU_RACK"].values()):
+        erori.append("SKIDURI_PENTRU_RACK: fiecare brand trebuie să fie 'rack' sau 'dc'.")
+    if not v["PCS_PE_BATERIE"] or any(n <= 0 for n in v["PCS_PE_BATERIE"]):
+        erori.append("PCS_PE_BATERIE trebuie să conțină numere pozitive (ex. 1, 2).")
+    return erori
+
+
+def aplica_setari_generator(cale=None):
+    """Citește Setari generator.xlsx (dacă există) și înlocuiește regulile din cod.
+    Returnează (nr. setări schimbate, lista de probleme). Rândurile cu greșeli rămân cu valoarea din cod."""
+    cale = cale or FISIER_SETARI_GENERATOR
+    if not os.path.exists(cale):
+        return 0, []
+    try:
+        df = citeste_copie(cale, [FOAIE_REGULI])[FOAIE_REGULI]
+    except Exception as e:
+        return 0, [f"Nu am putut citi foaia '{FOAIE_REGULI}': {e}"]
+    tipuri = {nume: tip for nume, _, tip in SETARI_EDITABILE if tip}
+    noi, probleme = {}, []
+    for i, rand in df.iterrows():
+        nume = str(rand.iloc[0]).strip()
+        if nume not in tipuri:
+            continue
+        valoare = rand.iloc[2] if len(rand) > 2 else None
+        if valoare is None or (not isinstance(valoare, str) and pd.isna(valoare)) or \
+                (isinstance(valoare, str) and not valoare.strip() and tipuri[nume] != "text"):
+            continue                                            # gol -> rămâne valoarea din cod
+        if isinstance(valoare, str) and not valoare.strip():
+            valoare = ""
+        try:
+            noi[nume] = citeste_valoare_setare(valoare, tipuri[nume])
+        except ValueError as e:
+            probleme.append(f"Rândul {i + 2} ({nume}): '{valoare}' {e}.")
+    erori = _verifica_setari_noi(noi)
+    if erori:
+        return 0, probleme + erori + ["Nu am aplicat nicio setare din fișier până nu sunt corectate."]
+    if "SKIDURI_PENTRU_RACK" in noi:
+        noi["SKIDURI_PENTRU_RACK"] = {k: v.lower() for k, v in noi["SKIDURI_PENTRU_RACK"].items()}
+    if "INCOTERM_IMPLICIT" in noi:
+        noi["INCOTERM_IMPLICIT"] = noi["INCOTERM_IMPLICIT"].upper()
+    schimbate = sum(1 for nume, val in noi.items() if globals()[nume] != val)
+    globals().update(noi)
+    return schimbate, probleme
+
+
+def scrie_setari_generator(cale):
+    """Creează Setari generator.xlsx cu valorile folosite acum de program."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    wb = Workbook()
+    sh = wb.active
+    sh.title = FOAIE_REGULI
+    sh.append(["Cheie (nu se modifică)", "Setare", "Valoare", "Format"])
+    formate = {"numar": "număr", "intreg": "număr întreg", "text": "text", "lista": "texte separate prin virgulă",
+               "lista_intregi": "numere separate prin virgulă", "perechi": "nume = număr; nume = număr",
+               "perechi_text": "nume = rack/dc; ...", "praguri": "de la MWh = kVA; ..."}
+    for nume, eticheta, tip in SETARI_EDITABILE:
+        if tip is None:
+            sh.append(["", nume])
+            sh.cell(sh.max_row, 2).font = Font(bold=True, size=12)
+            continue
+        sh.append([nume, eticheta, valoare_setare_text(globals()[nume], tip), formate[tip]])
+        sh.cell(sh.max_row, 1).font = Font(color="808080")
+        sh.cell(sh.max_row, 3).fill = PatternFill("solid", fgColor="DDEBF7")
+        sh.cell(sh.max_row, 3).alignment = Alignment(horizontal="left")
+    for celula in sh[1]:
+        celula.font = Font(bold=True, color="FFFFFF")
+        celula.fill = PatternFill("solid", fgColor="1F4E78")
+    for col, latime in zip("ABCD", (28, 58, 28, 34)):
+        sh.column_dimensions[col].width = latime
+    sh.freeze_panes = "A2"
+    sh.append([])
+    sh.append(["", "Se modifică doar coloana Valoare (albastru). Gol = valoarea din program. "
+                   "Modificările se aplică la următoarea pornire / previzualizare."])
+    wb.save(cale)
 
 
 def citeste_setari():
@@ -345,6 +544,81 @@ def incarca_date():
             "skid_poc": df_poc, "foaie_poc": nume_poc,
             "sursa": sursa, "mtime": os.path.getmtime(sursa),
             "mtime_specs": os.path.getmtime(sursa_specs) if sursa_specs else None}
+
+
+# Coloanele din Pricing folosite după poziție: (cheie din date, foaia, [(index, ce conține, tip valori)]).
+# Tip "numar" = valorile din coloană trebuie să fie în mare parte numere; "text" = în mare parte text.
+COLOANE_PRICING = [
+    ("bat", FOAIE_BATERIE, [(BAT_COL_BRAND, "Brand baterie", "text"), (BAT_COL_TYPE, "Model (Type)", "text"),
+                            (BAT_COL_CAP, "Capacitate (MWh)", "numar"), (BAT_COL_PRET_DAP, "Preț DAP / MWh", "numar"),
+                            (BAT_COL_PRET, "Preț DDP / MWh", "numar"), (BAT_COL_TRANSPORT, "Transport", "numar")]),
+    ("skid", FOAIE_SKID, [(SKID_COL_BRAND, "Brand skid", "text"), (SKID_COL_TYPE, "Model (Type)", "text"),
+                          (SKID_COL_PRET, "Preț", "numar"),
+                          (SKID_COL_TRANSPORT, "Transport", "numar"), (SKID_COL_COM, "Commissioning", "numar")]),
+    ("skid_poc", "MV SKID for different POC",
+     [(SKID_COL_BRAND, "Brand skid", "text"), (SKID_COL_TYPE, "Model (Type)", "text"),
+      (SKID_COL_PRET, "Preț", "numar"), (SKID_COL_TRANSPORT, "Transport", "numar")]),
+]
+# Texte care trebuie să apară în antetul unor coloane (verificare sigură, independentă de istoric)
+ANTETE_OBLIGATORII = {("bat", BAT_COL_TYPE): "type", ("bat", BAT_COL_PRET_DAP): "dap", ("bat", BAT_COL_PRET): "ddp",
+                      ("skid", SKID_COL_TYPE): "type", ("skid_poc", SKID_COL_TYPE): "type"}
+
+
+def _e_numar(v):
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return not pd.isna(v)
+    try:
+        float(str(v).replace(",", "."))
+        return True
+    except ValueError:
+        return False
+
+
+def verifica_coloane_pricing(date):
+    """Verifică dacă coloanele din Pricing au rămas pe pozițiile folosite de program.
+    Returnează (probleme_sigure, antete_schimbate, antete_actuale):
+    - probleme_sigure: antet fără textul obligatoriu, coloană lipsă sau valori de alt tip (ex. text în loc de preț);
+    - antete_schimbate: antete diferite față de ultima verificare acceptată (ținută minte în setari.json)."""
+    probleme, actuale = [], {}
+    for cheie, foaie, coloane in COLOANE_PRICING:
+        df = date.get(cheie)
+        if df is None:
+            continue
+        nume_foaie = date.get("foaie_poc") if cheie == "skid_poc" else foaie
+        c_tip = df.columns[SKID_COL_TYPE if cheie != "bat" else BAT_COL_TYPE] if len(df.columns) > 3 else None
+        randuri = df.dropna(subset=[c_tip]) if c_tip is not None else df
+        for idx, descriere, tip in coloane:
+            litera = litera_coloana(idx)
+            if idx >= len(df.columns):
+                probleme.append(f"'{nume_foaie}', coloana {litera} ({descriere}): lipsește.")
+                continue
+            antet = str(df.columns[idx]).strip()
+            actuale[f"{cheie}:{litera}"] = antet
+            obligatoriu = ANTETE_OBLIGATORII.get((cheie, idx))
+            if obligatoriu and obligatoriu not in antet.lower():
+                probleme.append(f"'{nume_foaie}', coloana {litera} ({descriere}): antetul e '{antet}', "
+                                f"mă așteptam să conțină '{obligatoriu}'.")
+                continue
+            valori = [v for v in randuri.iloc[:, idx] if not (not isinstance(v, str) and pd.isna(v))
+                      and str(v).strip()]
+            if len(valori) < 3:
+                continue
+            numere = sum(_e_numar(v) for v in valori)
+            if tip == "numar" and numere < 0.6 * len(valori):
+                probleme.append(f"'{nume_foaie}', coloana {litera} ({descriere}, antet '{antet}'): "
+                                f"doar {numere} din {len(valori)} valori sunt numere.")
+            elif tip == "text" and numere > 0.5 * len(valori):
+                probleme.append(f"'{nume_foaie}', coloana {litera} ({descriere}, antet '{antet}'): "
+                                f"conține în mare parte numere, nu text.")
+    vechi = citeste_setari().get("antete_pricing") or {}
+    schimbate = [f"{k.split(':')[0].replace('skid_poc', 'MV SKID POC').replace('bat', FOAIE_BATERIE).replace('skid', FOAIE_SKID)}"
+                 f", coloana {k.split(':')[1]}: '{vechi[k]}' → '{v}'"
+                 for k, v in actuale.items() if k in vechi and vechi[k] != v]
+    return probleme, schimbate, actuale
+
+
+def accepta_antete_pricing(actuale):
+    salveaza_setari(dict(citeste_setari(), antete_pricing=actuale))
 
 
 def fixeaza_antet(df):
@@ -1488,12 +1762,17 @@ class DriveCloud:
         stare = self._citeste_json(self.fisier_stare)
         de_luat = [(self.pricing, FISIER_PRICING)] + [(self.ofertare, f) for f in
                                                       (FISIER_PCS, FISIER_SPECS, FISIER_EXCEL_TEMPLATE,
-                                                       FISIER_PPT_TEMPLATE)]
+                                                       FISIER_PPT_TEMPLATE, FISIER_SETARI_GENERATOR)]
         listari, actualizate = {}, []
         for folder, nume in de_luat:
             if folder not in listari:
                 listari[folder] = {c["name"].lower(): c for c in self._copii(folder) if "file" in c}
             element = listari[folder].get(nume.lower())
+            if element is None and nume == FISIER_SETARI_GENERATOR:      # opțional: fără el rămân regulile din cod
+                if os.path.exists(os.path.join(self.folder_lucru, nume)):
+                    os.remove(os.path.join(self.folder_lucru, nume))
+                stare.pop(nume, None)
+                continue
             if element is None:
                 unde = "Purchasing Prices Update_BESS" if folder == self.pricing else "Ofertare BESS"
                 raise EroareDrive(f"Nu găsesc '{nume}' în folderul '{unde}' din Drive.")
@@ -1548,6 +1827,17 @@ class DriveCloud:
             if os.path.isfile(cale):
                 self._urca(drive_id, id_oferta, fisier, cale)
         return self._cerere("GET", f"/drives/{drive_id}/items/{id_oferta}").get("webUrl")
+
+    def urca_setari(self, cale_locala):
+        """Urcă Setari generator.xlsx în folderul 'Ofertare BESS'. Returnează linkul fișierului."""
+        drive_id, item_id = self.ofertare
+        self._urca(drive_id, item_id, FISIER_SETARI_GENERATOR, cale_locala)
+        element = self._cerere("GET", f"/drives/{drive_id}/items/{item_id}:/{_cale_url(FISIER_SETARI_GENERATOR)}")
+        stare = self._citeste_json(self.fisier_stare)
+        stare[FISIER_SETARI_GENERATOR] = element.get("eTag")
+        with open(self.fisier_stare, "w", encoding="utf-8") as f:
+            json.dump(stare, f)
+        return element.get("webUrl")
 
     def descriere_sursa(self):
         cand = ""
@@ -2308,8 +2598,9 @@ class AplicatieOferte:
             # cu Drive-ul conectat rămâne gol: nr. de contract se ia automat din BESS_Proposals
             ("Nr. proiect:", "" if DRIVE is not None else NR_PROIECT_IMPLICIT.format(an_luna=datetime.now().strftime("%Y%m"))),
             ("Locație:", "București, România"),
-            ("Capacitate (MWh):", "20"), ("Putere (MW):", "10"), ("Valoare EMS (USD):", "3500"),
-            ("Valoare ENG (USD):", "0"), ("Adaos Comercial (Margin):", "1.10"), ("Curs USD/EUR:", "0.89"),
+            ("Capacitate (MWh):", "20"), ("Putere (MW):", "10"), ("Valoare EMS (USD):", f"{EMS_AUTO:g}"),
+            ("Valoare ENG (USD):", "0"), ("Adaos Comercial (Margin):", f"{ADAOS_IMPLICIT:.2f}"),
+            ("Curs USD/EUR:", f"{CURS_IMPLICIT:g}"),
         ]
         for i, (eticheta, implicit) in enumerate(campuri):
             ttk.Label(frame, text=eticheta).grid(row=i, column=0, sticky="w", pady=5)
@@ -2380,11 +2671,96 @@ class AplicatieOferte:
         self.lbl_sursa.pack(pady=5)
         self._afiseaza_sursa()
         self._actualizeaza_liste_preia()
+        ttk.Button(root, text="⚙ Setări generator", command=self.dialog_setari).pack(pady=(0, 8))
+        self.probleme_pricing = None
+        if self.date:
+            self.root.after(200, self._verifica_pricing)
         if DRIVE is not None:
             self.root.after(300, self.ia_nr_contract)
 
     def _branduri_skid(self):
         return branduri_skid(self.date)
+
+    # ---------------- verificarea Pricing și setările ----------------
+    def _verifica_pricing(self, blocheaza=False):
+        """Verifică coloanele din Pricing. self.probleme_pricing: [] = în regulă, listă = nu se generează."""
+        if not self.date:
+            return
+        probleme, schimbate, actuale = verifica_coloane_pricing(self.date)
+        if probleme:
+            self.probleme_pricing = probleme
+            if not blocheaza:
+                messagebox.showerror("Pricing.xlsx – coloane schimbate",
+                                     "Coloanele din Pricing nu mai sunt unde le caută programul, deci prețurile "
+                                     "s-ar citi greșit. Nu se pot face oferte până nu se rezolvă:\n\n- "
+                                     + "\n- ".join(probleme) + "\n\nVerifică Pricing.xlsx (sau anunță-mă să "
+                                     "actualizez programul).")
+            return
+        if schimbate and not messagebox.askyesno(
+                "Pricing.xlsx – antete schimbate",
+                "Unele coloane din Pricing au alt titlu decât la ultima verificare:\n\n- " + "\n- ".join(schimbate)
+                + "\n\nValorile arată în continuare corect (numere unde trebuie). Dacă e doar o redenumire, "
+                  "apasă Da și noile titluri devin cele normale.\n\nNu = nu se fac oferte până nu verifici."):
+            self.probleme_pricing = schimbate
+            return
+        accepta_antete_pricing(actuale)
+        self.probleme_pricing = []
+
+    def _aplica_setari(self):
+        schimbate, probleme = aplica_setari_generator()
+        if probleme:
+            messagebox.showwarning(FISIER_SETARI_GENERATOR, "Probleme în fișierul de setări (rămân valorile din "
+                                   "program):\n\n- " + "\n- ".join(probleme))
+        if schimbate and self.date:
+            self.combo_baterie["values"] = ([OPTIUNE_AUTO_BATERIE] + baterii_din_lista(self.baterii_map)
+                                            + [OPTIUNE_MANUALA_BATERIE])
+        return schimbate
+
+    def dialog_setari(self):
+        """Creează / deschide Setari generator.xlsx (în 'Ofertare BESS' din Drive) și reîncarcă setările."""
+        exista = os.path.exists(FISIER_SETARI_GENERATOR)
+        if DRIVE is not None:
+            if exista:
+                actualizate = DRIVE.actualizeaza()
+                if FISIER_SETARI_GENERATOR in actualizate:
+                    n = self._aplica_setari()
+                    messagebox.showinfo("Setări", f"Am reîncărcat setările din Drive ({n} schimbate).")
+                if messagebox.askyesno("Setări generator",
+                                       f"Regulile sunt în '{FISIER_SETARI_GENERATOR}' din folderul Ofertare BESS "
+                                       "(Drive).\n\nÎl deschid în browser ca să-l modifici?\n\nDupă salvare, "
+                                       "setările noi se aplică la următoarea previzualizare."):
+                    drive_id, item_id = DRIVE.ofertare
+                    try:
+                        el = DRIVE._cerere("GET", f"/drives/{drive_id}/items/{item_id}:/"
+                                                  f"{_cale_url(FISIER_SETARI_GENERATOR)}")
+                        webbrowser.open(el["webUrl"])
+                    except Exception as e:
+                        messagebox.showerror("Setări", f"Nu am putut deschide fișierul:\n{e}")
+                return
+            if not messagebox.askyesno("Setări generator",
+                                       f"Nu există încă '{FISIER_SETARI_GENERATOR}' în Ofertare BESS.\n\n"
+                                       "Îl creez acum, cu regulile folosite azi de program, și îl urc în Drive?"):
+                return
+            try:
+                scrie_setari_generator(FISIER_SETARI_GENERATOR)
+                link = DRIVE.urca_setari(FISIER_SETARI_GENERATOR)
+            except Exception as e:
+                messagebox.showerror("Setări", f"Nu am putut crea fișierul:\n{e}")
+                return
+            if messagebox.askyesno("Setări generator", "Gata, fișierul e în Ofertare BESS. Îl deschid în browser?"):
+                webbrowser.open(link)
+            return
+        # fără Drive: fișierul stă în folderul sincronizat 'Ofertare BESS'
+        if not exista:
+            if not messagebox.askyesno("Setări generator", f"Creez '{FISIER_SETARI_GENERATOR}' în folderul "
+                                       f"Ofertare BESS, cu regulile folosite azi de program?"):
+                return
+            scrie_setari_generator(FISIER_SETARI_GENERATOR)
+        else:
+            n = self._aplica_setari()
+            messagebox.showinfo("Setări", f"Am reîncărcat setările ({n} schimbate).")
+        if sys.platform == "win32":
+            os.startfile(os.path.abspath(FISIER_SETARI_GENERATOR))
 
     def _construieste_tab_manual(self, tab):
         """Câmpurile pentru bateria și skidul introduse manual (două coloane)."""
@@ -2659,7 +3035,7 @@ class AplicatieOferte:
             return
         self._setare_auto = True
         try:
-            self.ems_var.set(EMS_AUTO if mwh >= EMS_PRAG_MWH else EMS_SUB_PRAG)
+            self.ems_var.set(f"{EMS_AUTO if mwh >= EMS_PRAG_MWH else EMS_SUB_PRAG:g}")
         finally:
             self._setare_auto = False
 
@@ -2702,8 +3078,13 @@ class AplicatieOferte:
             # Cu Drive-ul conectat: descărcăm fișierele schimbate (și atunci recitim tot)
             if DRIVE is not None:
                 self.status("Verific fișierele din Drive...")
-                if DRIVE.actualizeaza():
+                actualizate = DRIVE.actualizeaza()
+                if actualizate:
                     self.date = None
+                if FISIER_SETARI_GENERATOR in actualizate:
+                    self._aplica_setari()
+            if self.probleme_pricing is not None and not pricing_modificat(self.date):
+                self._verifica_pricing(blocheaza=True)
             # Recitim Pricing.xlsx doar dacă s-a modificat în Drive de la ultima citire
             if pricing_modificat(self.date):
                 self.status("Pricing.xlsx s-a modificat, îl recitesc...")
@@ -2715,6 +3096,11 @@ class AplicatieOferte:
                 self.combo_poc["values"] = self._valori_poc()
                 self._afiseaza_sursa()
                 self._actualizeaza_liste_preia()
+                self.probleme_pricing = None
+                self._verifica_pricing()
+            if self.probleme_pricing:
+                raise ValueError("Pricing.xlsx are coloane mutate sau schimbate, prețurile s-ar citi greșit:\n\n- "
+                                 + "\n- ".join(self.probleme_pricing))
             date = self.date
 
             nr_cerut = self.combo_nr_skid.get()
@@ -2857,6 +3243,10 @@ if __name__ == "__main__":
         DRIVE = porneste_drive()      # fișierele direct din Drive (copiile locale stau în DRIVE.folder_lucru)
     # PCS, specificații, template-uri și 'Oferte generate': din Drive, altfel din folderul sincronizat 'Ofertare BESS'
     os.chdir(DRIVE.folder_lucru if DRIVE is not None else alege_folder_lucru())
+    _nr_setari, _probleme_setari = aplica_setari_generator()
+    if _probleme_setari:
+        messagebox.showwarning(FISIER_SETARI_GENERATOR, "Probleme în fișierul de setări (rămân valorile din program):"
+                               "\n\n- " + "\n- ".join(_probleme_setari))
     # 'Generator Oferte BESS.exe --motor' (sau fișierul .py cu --motor) pornește modul motor pentru Power Apps
     gui = Motor(root) if "--motor" in sys.argv else AplicatieOferte(root)
     root.mainloop()
