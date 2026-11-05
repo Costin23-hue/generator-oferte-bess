@@ -578,6 +578,12 @@ def variante_intrari(baterie_text, brand_skid, nr_baterii):
     return [(nr_baterii * dc_per_baterie(brand_skid), "")]
 
 
+def cheie_skid(x):
+    """Numele skidului curățat, pentru legătura Pricing <-> PCS - MV skid.xlsx."""
+    x = re.sub(r"\s*(without|no) aux\s*$", "", str(x).strip(), flags=re.I)
+    return re.sub(r"\s+", " ", x).strip().lower()
+
+
 def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", kva_baterie=0.0,
                     forteaza_trafo=False):
     """Returnează (optiuni_sortate_dupa_cost_total, motive_respingere).
@@ -597,9 +603,7 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
     c_gar = df_skid.columns[SKID_COL_GARANTIE] if len(df_skid.columns) > SKID_COL_GARANTIE else None
 
     # Legătura Pricing <-> PCS se face pe nume curățate (spații în plus la final făceau ca skiduri să dispară)
-    def cheie(x):
-        x = re.sub(r"\s*(without|no) aux\s*$", "", str(x).strip(), flags=re.I)
-        return re.sub(r"\s+", " ", x).strip().lower()
+    cheie = cheie_skid
     sk = df_skid.dropna(subset=[c_tip]).copy()
     sk["_cheie"] = sk[c_tip].map(cheie)
     pc = df_pcs.dropna(subset=[df_pcs.columns[0]]).copy()
@@ -1766,6 +1770,69 @@ def optiune_skid_manuala(date, mw, nr_baterii, kva_baterie, forteaza_trafo, nr_f
     return o
 
 
+def _ani_camp(valoare):
+    """Garanția pentru câmpul manual: 15 -> 15, '10 years' -> '10 years', gol -> ''."""
+    return text_ani(valoare).replace(" years", "") if not isinstance(valoare, str) else text_ani(valoare)
+
+
+def baterie_din_pricing(date, baterii_map, model):
+    """Câmpurile bateriei manuale completate din Pricing (ultima cotație a modelului) și Specificații."""
+    df = date["bat"]
+    rand = df.loc[baterii_map[model]]
+    tip = curata_tip(rand.iloc[BAT_COL_TYPE])
+    specs = specs_baterie(date.get("specs"), tip) or {}
+    return {
+        "brand": str(rand.iloc[BAT_COL_BRAND]).strip(), "model": tip, "cap": numar(rand.iloc[BAT_COL_CAP]),
+        "pret_ddp": numar(rand.iloc[coloana_pret_baterie(df, "DDP")]),
+        "pret_dap": numar(rand.iloc[coloana_pret_baterie(df, "DAP")]),
+        "transport": numar(rand.iloc[BAT_COL_TRANSPORT]),
+        "garantie": _ani_camp(rand.iloc[BAT_COL_GARANTIE]) if len(rand) > BAT_COL_GARANTIE else "",
+        "ext_gar": "", "kva_aux": "",
+        "model_cod": specs.get("model", ""), "config": specs.get("config", ""), "weight": specs.get("weight", ""),
+    }
+
+
+def skiduri_din_pricing(date):
+    """{eticheta: (foaie, index)} pentru toate skidurile din 'MV SKID' și 'MV SKID for different POC'."""
+    rezultat = {}
+    for foaie, df in (("skid", date.get("skid")), ("skid_poc", date.get("skid_poc"))):
+        if df is None:
+            continue
+        c_brand, c_tip = df.columns[SKID_COL_BRAND], df.columns[SKID_COL_TYPE]
+        for idx, rand in df.dropna(subset=[c_tip]).iterrows():
+            eticheta = f"{str(rand[c_brand]).strip()} | {str(rand[c_tip]).strip()}" + \
+                       (" [alt POC]" if foaie == "skid_poc" else "")
+            rezultat.setdefault(eticheta, (foaie, idx))
+    return dict(sorted(rezultat.items()))
+
+
+def skid_din_pricing(date, foaie, idx):
+    """Câmpurile skidului manual completate din Pricing și din 'PCS - MV skid.xlsx'."""
+    df = date[foaie]
+    rand = df.loc[idx]
+    c = df.columns
+    nume, brand = str(rand[c[SKID_COL_TYPE]]).strip(), str(rand[c[SKID_COL_BRAND]]).strip()
+    pcs = date["pcs"]
+    dupa_nume = {cheie_skid(r[pcs.columns[0]]): r for _, r in pcs.dropna(subset=[pcs.columns[0]]).iterrows()}
+    p = dupa_nume.get(cheie_skid(nume))
+    if p is None:
+        p = dupa_nume.get(cheie_skid(nume).split(" ")[0])
+    putere_pcs = numar(p.get("PCS power")) if p is not None else 0.0
+    putere = putere_pcs * (numar(p.get("no / frame")) if p is not None else 0)
+    if p is not None and numar(p.get("Skid power")) > 0 and \
+            any(b.lower() in brand.lower() for b in PUTERE_NOMINALA_SKID):
+        putere = numar(p.get("Skid power"))
+    putere = putere or numar(rand[c[SKID_COL_POWER]])
+    aux = aux_inclus_skid(pd.Series({"_similar": "", COLOANA_AUX_PCS: p.get(COLOANA_AUX_PCS) if p is not None else None}),
+                          nume)
+    return {
+        "brand": brand, "model": nume, "putere": putere, "putere_pcs": putere_pcs or putere,
+        "pret": numar(rand[c[SKID_COL_PRET]]), "transport": numar(rand[c[SKID_COL_TRANSPORT]]),
+        "com": numar(rand[c[SKID_COL_COM]]), "aux_kva": aux or "",
+        "garantie": _ani_camp(rand[c[SKID_COL_GARANTIE]]) if len(c) > SKID_COL_GARANTIE else "", "ext_gar": "",
+    }
+
+
 def baterii_din_lista(baterii_map):
     """Modelele din Pricing afișate în listă (BATERII_IN_LISTA)."""
     return [b for b in baterii_map if any(t.lower() in b.lower() for t in BATERII_IN_LISTA)]
@@ -2277,6 +2344,7 @@ class AplicatieOferte:
         self.lbl_sursa = ttk.Label(root, text="", foreground="gray", wraplength=860)
         self.lbl_sursa.pack(pady=5)
         self._afiseaza_sursa()
+        self._actualizeaza_liste_preia()
         if DRIVE is not None:
             self.root.after(300, self.ia_nr_contract)
 
@@ -2291,11 +2359,20 @@ class AplicatieOferte:
                        "la Brand skid. Se pot combina cu componentele din baza de date.")\
             .grid(row=0, column=0, columnspan=2, padx=10, pady=8, sticky="w")
         self.manual = {"bat": {}, "skid": {}}
+        self.combo_preia, self._skiduri_preia = {}, {}
         for coloana, (cheie, titlu, campuri) in enumerate([("bat", "Baterie manuală", CAMPURI_BATERIE_MANUALA),
                                                            ("skid", "Skid manual", CAMPURI_SKID_MANUAL)]):
             grup = ttk.LabelFrame(tab, text=titlu)
             grup.grid(row=1, column=coloana, padx=10, pady=5, sticky="n")
-            for i, (camp, eticheta, implicit) in enumerate(campuri):
+            # completare rapidă din Pricing: se aleg brandul / modelul, apoi se modifică doar ce diferă (ex. prețul)
+            ttk.Label(grup, text="Preia din Pricing:", font=("Helvetica", 10, "bold"))\
+                .grid(row=0, column=0, sticky="w", padx=5, pady=(6, 2))
+            combo = ttk.Combobox(grup, state="readonly", width=38)
+            combo.grid(row=0, column=1, padx=5, pady=(6, 2))
+            combo.bind("<<ComboboxSelected>>", lambda e, k=cheie: self._preia_din_pricing(k))
+            self.combo_preia[cheie] = combo
+            ttk.Separator(grup).grid(row=1, column=0, columnspan=2, sticky="we", padx=5, pady=6)
+            for i, (camp, eticheta, implicit) in enumerate(campuri, start=2):
                 if camp is None:
                     ttk.Label(grup, text=eticheta, font=("Helvetica", 10, "bold"))\
                         .grid(row=i, column=0, columnspan=2, sticky="w", padx=5, pady=(10, 2))
@@ -2310,6 +2387,35 @@ class AplicatieOferte:
                     e.insert(0, implicit)
                     e.grid(row=i, column=1, padx=5, pady=3)
                     self.manual[cheie][camp] = e
+
+    def _actualizeaza_liste_preia(self):
+        """Listele „Preia din Pricing” (toate bateriile și skidurile din Pricing)."""
+        if not self.date or not hasattr(self, "combo_preia"):
+            return
+        self.combo_preia["bat"]["values"] = list(self.baterii_map)
+        self._skiduri_preia = skiduri_din_pricing(self.date)
+        self.combo_preia["skid"]["values"] = list(self._skiduri_preia)
+
+    def _preia_din_pricing(self, cheie):
+        """Completează câmpurile bateriei / skidului manual cu datele din Pricing."""
+        alegere = self.combo_preia[cheie].get()
+        try:
+            if cheie == "bat":
+                valori = baterie_din_pricing(self.date, self.baterii_map, alegere)
+            else:
+                valori = skid_din_pricing(self.date, *self._skiduri_preia[alegere])
+        except Exception as e:
+            messagebox.showerror("Preia din Pricing", f"Nu am putut prelua datele:\n{e}")
+            return
+        for camp, widget in self.manual[cheie].items():
+            if isinstance(widget, tk.BooleanVar):
+                widget.set(False)                                  # transportul e separat în Pricing
+                continue
+            v = valori.get(camp, "")
+            text = (f"{v:.4f}".rstrip("0").rstrip(".").replace(".", ",") if isinstance(v, float) else str(v)) \
+                if v not in (None, "") else ""          # virgulă zecimală: "75000,5" nu se confundă cu mii
+            widget.delete(0, "end")
+            widget.insert(0, "" if text in ("0", "nan") and camp in ("ext_gar", "kva_aux", "aux_kva") else text)
 
     # ---------------- tabelul BESS_Proposals ----------------
     def _construieste_panou_tabel(self, parinte):
@@ -2573,6 +2679,7 @@ class AplicatieOferte:
                 self.combo_brand["values"] = ["Oricare"] + self._branduri_skid() + [OPTIUNE_MANUALA_SKID]
                 self.combo_poc["values"] = self._valori_poc()
                 self._afiseaza_sursa()
+                self._actualizeaza_liste_preia()
             date = self.date
 
             nr_cerut = self.combo_nr_skid.get()
