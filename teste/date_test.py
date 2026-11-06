@@ -39,10 +39,12 @@ def date_test():
                         "Price USD DAP": [12000, 25000], "Price USD EXW Ankara": [10000, 21000]})
     pcs = pd.DataFrame({
         "SKID": ["BCS5000K-B-HUD", "BCS7500K-B-HUD", "PWS2-5000", "TBEA 10MW + AUX TRAFO 200kVA"],
-        "PCS power": [1.25, 1.25, 0.25, 0.215], "no / frame": [4, 6, 20, 48],
+        "PCS power": [1.25, 1.25, 1.25, 0.215], "no / frame": [4, 6, 4, 48],
         "Skid power": [5, 7.5, 5, 10], "Min no of imputs/ skid": [2, 3, 2, 12],
         "Max no of imputs/ skid": [4, 6, 4, 24], "Number of DC branch": [4, 6, 4, 48],
-        "Aux trafo kVA": [None, None, None, 200],
+        "Aux trafo kVA": [None, None, 400, 200],          # Sinexcel: trafo aux pentru tot sistemul
+        "Racire": [None, None, None, None],
+        "Consum aux skid kVA": [None, None, None, None],
     })
     return {"bat": bat, "skid": skid, "aux": aux, "pcs": pcs, "specs": None, "skid_poc": skid_poc,
             "foaie_poc": "MV SKID for different POC", "sursa": "test", "mtime": 0, "mtime_specs": None}
