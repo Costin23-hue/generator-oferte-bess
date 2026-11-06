@@ -200,6 +200,11 @@ class Formatare(unittest.TestCase):
         self.assertEqual(g.bani_eu(1234567.891), "1.234.567,89")
         self.assertEqual(g.nr_eu(5.015), "5,015")
 
+    def test_putere_limitata_prin_ems(self):
+        self.assertEqual(g.text_putere_propusa(6, 5.85), "6 (limited by EMS to 5,85)")
+        self.assertEqual(g.text_putere_propusa(10, 10), "10")
+        self.assertEqual(g.text_putere_propusa(7.5, 7.5), "7,5")
+
     def test_ore_baterie(self):
         self.assertEqual(g.ore_baterie(JINKO_2H), 2)
         self.assertEqual(g.ore_baterie(REPT), 4)

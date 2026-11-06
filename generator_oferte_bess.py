@@ -169,6 +169,10 @@ TRAFO_FILTRU = ""
 
 ORE_MIN, ORE_MAX = 0.5, 8                # raport MWh/MW considerat normal
 ADAOS_IMPLICIT, CURS_IMPLICIT = 1.10, 0.89   # valorile puse în fereastră la pornire
+# Limitare prin EMS: când puterea skidurilor e mai mare decât cea cerută (ex. 6 MW pentru 5,85 MW cerut),
+# puterea evacuată se limitează prin EMS la cea cerută; în prezentare, la [PROP_MW], apare textul de mai jos.
+# {propus} = puterea skidurilor, {limitat} = puterea cerută (ambele în stil european, ex. 5,85).
+TEXT_LIMITARE_EMS = "{propus} (limited by EMS to {limitat})"
 ADAOS_MIN, ADAOS_MAX = 1.0, 2.0
 CURS_MIN, CURS_MAX = 0.5, 2.0
 EMS_PRAG_MWH = 15          # de la această capacitate EMS se completează automat
@@ -248,6 +252,7 @@ SETARI_EDITABILE = [
     ("EMS_AUTO", "EMS (USD) la capacitate >= prag", "numar"),
     ("EMS_SUB_PRAG", "EMS (USD) la capacitate sub prag", "numar"),
     ("INCOTERM_IMPLICIT", "Incoterm pus la pornire (DDP sau DAP)", "text"),
+    ("TEXT_LIMITARE_EMS", "Text în prezentare la putere limitată prin EMS ({propus}, {limitat})", "text"),
     ("ORE_MIN", "Durată proiect considerată normală: minim (ore)", "numar"),
     ("ORE_MAX", "Durată proiect considerată normală: maxim (ore)", "numar"),
     ("NR_OPTIUNI_SKID", "Câte variante de skid se arată în previzualizare", "intreg"),
@@ -425,6 +430,10 @@ def _verifica_setari_noi(noi):
         erori.append(f"INCOTERM_IMPLICIT trebuie să fie unul dintre: {', '.join(INCOTERMS)}.")
     if any(m.lower() not in ("rack", "dc") for m in v["SKIDURI_PENTRU_RACK"].values()):
         erori.append("SKIDURI_PENTRU_RACK: fiecare brand trebuie să fie 'rack' sau 'dc'.")
+    try:
+        v["TEXT_LIMITARE_EMS"].format(propus="6", limitat="5,85")
+    except (KeyError, IndexError, ValueError):
+        erori.append("TEXT_LIMITARE_EMS poate folosi doar {propus} și {limitat}.")
     if not v["PCS_PE_BATERIE"] or any(n <= 0 for n in v["PCS_PE_BATERIE"]):
         erori.append("PCS_PE_BATERIE trebuie să conțină numere pozitive (ex. 1, 2).")
     return erori
@@ -1250,7 +1259,8 @@ def descriere_skid(o, mw=None):
     nume = o["tip"] if o["brand"].lower() in o["tip"].lower() else f"{o['brand']} {o['tip']}"
     marcaj = ""
     if mw is not None:
-        marcaj = "  ✓ putere exactă" if abs(o["putere_totala"] - mw) < 0.01 else "  (putere mai mare decât cerută)"
+        marcaj = "  ✓ putere exactă" if abs(o["putere_totala"] - mw) < 0.01 else \
+            f"  (putere mai mare decât cerută: limitată prin EMS la {nr_eu(mw)} MW)"
     pret = (f"skid {o['pret_total']:,.0f} $ + trafo {o['trafo']['cost']:,.0f} $ = {o['cost_total']:,.0f} $"
             if o.get("trafo") else f"{o['pret_total']:,.0f} $")
     if o.get("manual"):
@@ -2522,7 +2532,7 @@ def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status
         "[MWH]": nr_eu(intrari["mwh"]),
         "[MW]": nr_eu(intrari["mw"]),
         "[PROP_MWH]": nr_eu(nr_baterii * baterie["cap"]),
-        "[PROP_MW]": nr_eu(skid["putere_totala"]),
+        "[PROP_MW]": text_putere_propusa(skid["putere_totala"], intrari["mw"]),   # cu limitare EMS
         "[BAT_BRAND]": baterie["brand"],
         "[BAT_NAME]": baterie["specs"]["model"],      # codul real (ex. Y104R04C12), nu 'REPT 5,015'
         "[NR_BAT]": str(nr_baterii),
@@ -2616,6 +2626,18 @@ def cale_onedrive(cale_locala):
     return "/" + os.path.relpath(cale_locala, radacina).replace(os.sep, "/")
 
 
+def limitat_prin_ems(putere_propusa, mw_cerut):
+    """True dacă skidurile au mai multă putere decât s-a cerut -> puterea evacuată se limitează prin EMS."""
+    return mw_cerut > 0 and putere_propusa - mw_cerut > 0.005
+
+
+def text_putere_propusa(putere_propusa, mw_cerut):
+    """[PROP_MW]: '6' sau, cu limitare prin EMS, '6 (limited by EMS to 5,85)'."""
+    if limitat_prin_ems(putere_propusa, mw_cerut):
+        return TEXT_LIMITARE_EMS.format(propus=nr_eu(putere_propusa), limitat=nr_eu(mw_cerut))
+    return nr_eu(putere_propusa)
+
+
 def ems_pentru(mwh):
     """Valoarea EMS (USD) după capacitate: de la EMS_PRAG_MWH în sus EMS_AUTO, sub prag EMS_SUB_PRAG."""
     return float(EMS_AUTO if mwh >= EMS_PRAG_MWH - 1e-9 else EMS_SUB_PRAG)
@@ -2668,7 +2690,7 @@ def previzualizeaza_cerere(date, baterii_map, c):
         "optiuni": [{"skid": o["tip"],
                      "text": f"{o['nr']} x {o['tip']} = {nr_eu(o['putere_totala'])} MW | {bani_eu(o['cost_total'], 0)} $",
                      "detalii": (("✓ putere exactă" if abs(o["putere_totala"] - intrari["mw"]) < 0.01
-                                  else "putere mai mare decât cerută")
+                                  else f"limitată prin EMS la {nr_eu(intrari['mw'])} MW")
                                  + f" | intrări DC: {o['intrari']:g} (acceptă {o['acceptate']})"
                                  + (f" | {o['conexiune']}" if o.get("conexiune") else "")
                                  + f" | {text_aux(o)}")}
