@@ -29,6 +29,10 @@ jobs:
       - name: Instaleaza bibliotecile
         run: python -m pip install pyinstaller "pandas==2.3.3" openpyxl xlwings python-pptx
 
+      # Testele automate (teste/): dacă unul pică, aplicația nu se mai construiește
+      - name: Ruleaza testele
+        run: python -m unittest discover -s teste -v
+
       - name: Construieste aplicatia
         run: python construieste_exe.py
 

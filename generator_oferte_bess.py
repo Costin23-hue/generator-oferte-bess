@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tkinter as tk
 import urllib.error
@@ -38,6 +39,11 @@ if getattr(sys, "frozen", False):
 else:
     FOLDER_PROGRAM = os.path.dirname(os.path.abspath(__file__))
 FOLDER_OFERTE = "Oferte generate"
+
+# Actualizare automată (doar când rulează fișierul .py, nu .exe): la pornire se compară fișierele programului cu
+# cele de pe GitHub (repository public); dacă diferă, apare butonul "Versiune nouă – Actualizează".
+URL_ACTUALIZARE = "https://raw.githubusercontent.com/Costin23-hue/generator-oferte-bess/main/"
+FISIERE_PROGRAM = ("generator_oferte_bess.py",)
 
 # Pricing.xlsx se citește (doar citire) din folderul Purchasing sincronizat la fiecare utilizator.
 # Numele folderului diferă de la un PC la altul (ex. 'Levon Çağla - Purchasing Prices Update_BESS'),
@@ -268,6 +274,61 @@ def numar(valoare, implicit=0.0):
         return float(valoare)
     except (TypeError, ValueError):
         return implicit
+
+
+# ---------------- actualizare automată de pe GitHub ----------------
+def _descarca_text(url, timeout=15):
+    cerere = urllib.request.Request(url + f"?t={int(time.time())}", headers={"Cache-Control": "no-cache"})
+    with urllib.request.urlopen(cerere, timeout=timeout) as r:
+        return r.read().decode("utf-8")
+
+
+def _normalizat(text):
+    return text.replace("\r\n", "\n")
+
+
+def cauta_actualizare():
+    """{nume fișier: conținut nou} pentru fișierele programului care diferă de cele de pe GitHub; {} = la zi.
+    Fără internet / GitHub indisponibil -> {} (programul merge normal)."""
+    if getattr(sys, "frozen", False) or os.path.isdir(os.path.join(FOLDER_PROGRAM, ".git")):
+        return {}                                   # .exe sau folderul de dezvoltare: nu se actualizează
+    try:
+        principal = _descarca_text(URL_ACTUALIZARE + FISIERE_PROGRAM[0])
+        m = re.search(r"^FISIERE_PROGRAM = \(([^)]*)\)", principal, re.M)
+        fisiere = re.findall(r'"([^"]+)"', m.group(1)) if m else [FISIERE_PROGRAM[0]]
+        noi = {}
+        for nume in fisiere:
+            text = principal if nume == FISIERE_PROGRAM[0] else _descarca_text(URL_ACTUALIZARE + nume)
+            cale = os.path.join(FOLDER_PROGRAM, nume)
+            try:
+                with open(cale, encoding="utf-8") as f:
+                    vechi = f.read()
+            except OSError:
+                vechi = None
+            if vechi is None or _normalizat(vechi) != _normalizat(text):
+                noi[nume] = text
+        return noi
+    except Exception:
+        return {}
+
+
+def aplica_actualizare(noi):
+    """Scrie fișierele noi (cele vechi rămân ca .bak). Verifică întâi că tot codul nou e corect."""
+    for nume, text in noi.items():
+        compile(text, nume, "exec")                 # SyntaxError -> nu se schimbă nimic
+    for nume, text in noi.items():
+        cale = os.path.join(FOLDER_PROGRAM, nume)
+        os.makedirs(os.path.dirname(cale), exist_ok=True)
+        if os.path.exists(cale):
+            shutil.copy2(cale, cale + ".bak")
+        with open(cale + ".nou", "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(cale + ".nou", cale)
+
+
+def reporneste_programul():
+    subprocess.Popen([sys.executable, os.path.join(FOLDER_PROGRAM, FISIERE_PROGRAM[0])] + sys.argv[1:],
+                     cwd=FOLDER_PROGRAM)
 
 
 # ---------------- Setari generator.xlsx ----------------
@@ -2265,9 +2326,6 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
             if brand != "Oricare" and doar_poc_implicit(brand):
                 raise ValueError(f"{brand} are skiduri doar pentru POC {POC_IMPLICIT_KV} kV (România), "
                                  f"nu pentru {intrari['poc_kv']:g} kV.")
-            if e_baterie_rack(f"{baterie['brand']} {baterie['tip']}"):
-                raise ValueError(f"Bateria {baterie['tip']} merge doar pe TBEA, care e disponibil doar "
-                                 f"la POC {POC_IMPLICIT_KV} kV (România).")
         date_poc = dict(date, skid=skiduri_pentru_poc(date, intrari["poc_kv"]))
         optiuni, motive = gaseste_skiduri(date_poc, intrari["mw"], nr_baterii, brand, nr_fix,
                                           baterie_text=f"{baterie['brand']} {baterie['tip']}",
@@ -2723,6 +2781,9 @@ class AplicatieOferte:
         self._afiseaza_sursa()
         self._actualizeaza_liste_preia()
         ttk.Button(root, text="⚙ Setări generator", command=self.dialog_setari).pack(pady=(0, 8))
+        self._actualizare = None
+        threading.Thread(target=lambda: setattr(self, "_actualizare", cauta_actualizare()), daemon=True).start()
+        self.root.after(1000, self._arata_actualizare)
         self.probleme_pricing = None
         if self.date:
             self.root.after(200, self._verifica_pricing)
@@ -2731,6 +2792,29 @@ class AplicatieOferte:
 
     def _branduri_skid(self):
         return branduri_skid(self.date)
+
+    # ---------------- actualizare automată ----------------
+    def _arata_actualizare(self, incercari=60):
+        if self._actualizare is None:                       # verificarea încă rulează (max. ~1 minut)
+            if incercari:
+                self.root.after(1000, lambda: self._arata_actualizare(incercari - 1))
+            return
+        if self._actualizare:
+            tk.Button(self.root, text="⬆ Versiune nouă disponibilă – Actualizează", bg="#1e7e34", fg="white",
+                      font=("Helvetica", 10, "bold"), command=self.actualizeaza_programul)\
+                .pack(pady=(0, 8), fill="x", padx=20)
+
+    def actualizeaza_programul(self):
+        if not messagebox.askyesno("Actualizare", "Instalez versiunea nouă și repornesc programul?\n\n"
+                                   "(Ce ai completat în fereastră se pierde.)"):
+            return
+        try:
+            aplica_actualizare(self._actualizare)
+        except Exception as e:
+            messagebox.showerror("Actualizare", f"Nu am putut actualiza (programul a rămas cum era):\n{e}")
+            return
+        reporneste_programul()
+        self.root.destroy()
 
     # ---------------- verificarea Pricing și setările ----------------
     def _verifica_pricing(self, blocheaza=False):
