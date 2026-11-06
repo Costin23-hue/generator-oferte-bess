@@ -97,42 +97,24 @@ class Oferte(unittest.TestCase):
 
 
 class TrafoAux(unittest.TestCase):
-    """Consumul aux: baterii + skiduri (după putere și răcire); trafo extern doar unde skidul nu acoperă."""
+    """Consumul aux: baterii + skiduri (după putere); trafo extern doar unde skidul nu acoperă."""
 
     def setUp(self):
         self.date = date_test()
         self.baterii = g.lista_baterii(self.date["bat"])
 
-    def skid(self, brand, mwh=20, mw=10, trafo=None, baterie=JINKO_2H, **pcs):
-        for coloana, valori in pcs.items():                 # ex. Racire={"BCS5000K-B-HUD": "confirmat"}
-            for nume, valoare in valori.items():
-                self.date["pcs"].loc[self.date["pcs"]["SKID"] == nume, coloana] = valoare
+    def skid(self, brand, mwh=20, mw=10, trafo=None, baterie=JINKO_2H):
         p = g.pregateste_oferta(self.date, self.baterii, intrari_test(mwh, mw), baterie, "DDP", brand, None, trafo)
         return p["lista"][0]
 
     def test_trepte_consum_skid(self):
-        trepte = [(mw, g.consum_aux_skid(mw)[0], g.consum_aux_skid(mw, "confirmat")[0])
-                  for mw in (2, 3, 5, 7.5, 10, 12.5)]
-        self.assertEqual(trepte, [(2, 30, 15), (3, 40, 15), (5, 40, 15), (7.5, 50, 20), (10, 60, 20),
-                                  (12.5, 75, 25)])
+        self.assertEqual([g.consum_aux_skid(mw) for mw in (1, 2, 3, 5, 7.5, 10, 12.5)],
+                         [30, 30, 40, 40, 50, 60, 75])
 
-    def test_valoarea_producatorului_are_prioritate(self):
-        self.assertEqual(g.consum_aux_skid(5, "confirmat", 33)[:2], (33, "valoare de la producător"))
-
-    def test_racire_lichida_avertizeaza(self):
-        kva, _, avert = g.consum_aux_skid(5, "lichid")
-        self.assertEqual(kva, 40)
-        self.assertIn("producător", avert)
-
-    def test_fara_trafo_in_skid_neconfirmat(self):
+    def test_fara_trafo_in_skid(self):
         o = self.skid("Kehua")                               # 4 x 55 + 2 x 40 = 300 kVA, skidul nu are aux
         self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (300, 0, 300))
         self.assertEqual(o["trafo"]["kva"] * o["trafo"]["cant"], 450)
-
-    def test_fara_trafo_in_skid_racire_confirmata(self):
-        o = self.skid("Kehua", Racire={"BCS5000K-B-HUD": "confirmat"})     # 4 x 55 + 2 x 15 = 250 kVA
-        self.assertEqual(o["kva_necesar"], 250)
-        self.assertEqual(o["sursa_consum_skid"], "răcire confirmată")
 
     def test_trafo_in_skid_acopera_tot_sistemul(self):
         o = self.skid("Sinexcel")                            # 2 skiduri x 400 kVA >= 300 kVA
@@ -164,10 +146,10 @@ class TrafoAux(unittest.TestCase):
         self.date["aux"].loc[:, "Price USD DAP"] = [30000, 50000]       # trafo extern mai scump
         self.assertEqual(self.skid("Oricare")["brand"], "Sinexcel")
 
-    def test_skid_manual_cu_consum_dat(self):
-        m = {"brand": "X", "model": "Y", "putere": "5", "pret": "100000", "consum_skid": "25", "aux_kva": ""}
-        o = g.optiune_skid_manuala(self.date, 10, 4, 55, None, None, m)
-        self.assertEqual(o["kva_necesar"], 4 * 55 + 2 * 25)
+    def test_skid_manual_7_5_mw(self):
+        m = {"brand": "X", "model": "Y", "putere": "7,5", "pret": "100000", "aux_kva": ""}
+        o = g.optiune_skid_manuala(self.date, 15, 3, 55, None, None, m)
+        self.assertEqual(o["kva_necesar"], 3 * 55 + 2 * 50)
 
 
 class ComponenteManuale(unittest.TestCase):

@@ -150,16 +150,8 @@ PUTERE_NOMINALA_SKID = ("TBEA",)
 # Tabelul se scrie și în Excelul de calcul (A24:B25).
 KVA_AUX_PER_BATERIE = [(0, 55), (5.6, 65)]
 # Consumul auxiliar propriu al unui skid (PCS + MV skid), kVA, după puterea skidului: (până la MW, kVA), crescător.
-# Peste ultima treaptă: proporțional cu puterea. Între trepte: treapta următoare (acoperitor).
-#   - răcire confirmată (ventilatoare / răcire alimentate din circuitul de putere):
-KVA_CONSUM_SKID_CONFIRMAT = [(2, 15), (5, 15), (7.5, 20), (10, 20)]
-#   - neconfirmat (valoarea implicită, ca să fii acoperit când nu știi):
-KVA_CONSUM_SKID_NECONFIRMAT = [(2, 30), (5, 40), (7.5, 50), (10, 60)]
-#   - răcire lichidă: valoarea se cere de la producător (fără ea se folosește "neconfirmat", cu avertisment).
-# Coloane opționale în 'PCS - MV skid.xlsx': COLOANA_CONSUM_SKID_PCS = valoarea de la producător (are prioritate),
-# COLOANA_RACIRE_PCS = "confirmat" / "lichid" (gol = neconfirmat).
-COLOANA_CONSUM_SKID_PCS = "Consum aux skid kVA"
-COLOANA_RACIRE_PCS = "Racire"
+# Valori acoperitoare (cele mai mari), pentru orice skid. Între trepte: treapta următoare; peste ultima: proporțional.
+KVA_CONSUM_SKID = [(2, 30), (5, 40), (7.5, 50), (10, 60)]
 # Trafo aux inclus în skid (kVA): coloana cu acest nume din 'PCS - MV skid.xlsx'; dacă lipsește, din numele
 # skidului ('... + AUX TRAFO 200kVA'); altfel skidul e considerat fără aux.
 # Necesar = baterii x kVA/baterie + skiduri x consum aux skid; ce nu acoperă skidurile se acoperă automat cu
@@ -215,7 +207,6 @@ CAMPURI_SKID_MANUAL = [
     ("putere_pcs", "Putere PCS (MW):", ""), ("pret", "Preț / skid ($):", ""),
     ("transport", "Transport / skid ($):", ""), ("transport_inclus", "Prețul include transportul", None),
     ("com", "Commissioning / skid ($):", ""), ("aux_kva", "Trafo aux inclus în skid (kVA, gol = fără):", ""),
-    ("consum_skid", "Consum aux propriu / skid (kVA, gol = neconfirmat):", ""),
     ("garantie", "Garanție standard (ani):", ""), ("ext_gar", "Extra warranty (% din total, opțional):", ""),
 ]
 
@@ -262,8 +253,7 @@ SETARI_EDITABILE = [
     ("FARA_EXTENSIE_GARANTIE", "Branduri fără extra warranty (rândul dispare din prezentare)", "lista"),
     ("Skiduri și compatibilitate", None, None),
     ("PCS_PE_BATERIE", "Câte PCS poate alimenta o baterie (ex. 1, 2)", "lista_intregi"),
-    ("KVA_CONSUM_SKID_CONFIRMAT", "Consum aux / skid, răcire confirmată (până la MW = kVA)", "trepte"),
-    ("KVA_CONSUM_SKID_NECONFIRMAT", "Consum aux / skid, neconfirmat (până la MW = kVA)", "trepte"),
+    ("KVA_CONSUM_SKID", "Consum aux propriu / skid (până la MW = kVA)", "trepte"),
     ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),
     ("POC_IMPLICIT_KV", "POC România (kV) = foaia 'MV SKID'", "numar"),
     ("BRANDURI_DOAR_POC_IMPLICIT", "Branduri de skid doar la POC România", "lista"),
@@ -1112,10 +1102,7 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
             "putere_pcs": numar(skid.get("PCS power")),                         # din PCS - MV skid.xlsx
             "garantie": text_ani(skid.get(c_gar)) if c_gar else "",            # coloana M
         })
-        consum = consum_aux_skid(putere, _coloana_pcs(skid, COLOANA_RACIRE_PCS),
-                                 numar(_coloana_pcs(skid, COLOANA_CONSUM_SKID_PCS)) if not skid.get("_similar") else 0)
-        calcul_aux(optiuni[-1], aux_inclus_skid(skid, nume), nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing,
-                   consum)
+        calcul_aux(optiuni[-1], aux_inclus_skid(skid, nume), nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing)
 
     optiuni.sort(key=lambda o: o["cost_total"])
     return optiuni, motive
@@ -1137,34 +1124,15 @@ def _din_trepte(trepte, putere):
     return math.ceil(kva * putere / mw)                   # peste ultima treaptă: proporțional
 
 
-def consum_aux_skid(putere_mw, racire="", kva_producator=0.0):
-    """(kVA consum propriu al unui skid, de unde vine valoarea, avertisment sau "")."""
-    racire = str(racire or "").strip().lower()
-    if racire == "nan":
-        racire = ""
-    if kva_producator and kva_producator > 0:
-        return kva_producator, "valoare de la producător", ""
-    if racire.startswith("lich") or "liquid" in racire:
-        return (_din_trepte(KVA_CONSUM_SKID_NECONFIRMAT, putere_mw), "răcire lichidă, valoare neconfirmată",
-                "răcire lichidă: consumul aux al skidului trebuie cerut de la producător "
-                "(până atunci folosesc valoarea neconfirmată)")
-    if racire.startswith("confirm"):
-        return _din_trepte(KVA_CONSUM_SKID_CONFIRMAT, putere_mw), "răcire confirmată", ""
-    return _din_trepte(KVA_CONSUM_SKID_NECONFIRMAT, putere_mw), "neconfirmat", ""
+def consum_aux_skid(putere_mw):
+    """kVA consum propriu al unui skid, după putere (KVA_CONSUM_SKID)."""
+    return _din_trepte(KVA_CONSUM_SKID, putere_mw)
 
 
-def _coloana_pcs(rand, nume):
-    for coloana in rand.index:
-        if str(coloana).strip().lower() == nume.lower():
-            return rand[coloana]
-    return None
-
-
-def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing, consum_skid=None):
-    """Completează opțiunea de skid cu necesarul aux, ce acoperă skidul, trafo-ul extern și costul total.
-    consum_skid = (kVA / skid, sursa, avertisment) din consum_aux_skid(); None = neconfirmat după putere."""
+def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing):
+    """Completează opțiunea de skid cu necesarul aux, ce acoperă skidul, trafo-ul extern și costul total."""
     o["aux_skid"] = aux_skid
-    o["kva_skid"], o["sursa_consum_skid"], o["avert_consum_skid"] = consum_skid or consum_aux_skid(o["putere_unit"])
+    o["kva_skid"] = consum_aux_skid(o["putere_unit"])
     o["kva_baterii"] = nr_baterii * kva_baterie
     o["kva_necesar"] = o["kva_baterii"] + o["nr"] * o["kva_skid"]
     o["kva_acoperit"] = o["nr"] * aux_skid
@@ -1184,7 +1152,7 @@ def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_prici
 def text_aux(o):
     """'aux: necesar 250 kVA (4 baterii + 1 skid), skid acoperă 200 kVA -> trafo extern: 1 x 400 KVA ... = 30.000 $'."""
     text = (f"aux: necesar {o['kva_necesar']:g} kVA (baterii {o['kva_baterii']:g} + skid {o['nr']} x "
-            f"{o['kva_skid']:g} kVA, {o['sursa_consum_skid']}), "
+            f"{o['kva_skid']:g} kVA), "
             + (f"skidul acoperă {o['kva_acoperit']:g} kVA" if o["kva_acoperit"] else "skid fără trafo aux") + " -> ")
     if o.get("fara_trafo"):
         text += ("fără trafo extern (exclus manual" +
@@ -1195,8 +1163,6 @@ def text_aux(o):
         text += f"⚠ e nevoie de trafo extern ({o['kva_trafo']:g} kVA), dar nu e niciunul în Pricing"
     else:
         text += "nu e nevoie de trafo extern"
-    if o.get("avert_consum_skid"):
-        text += f"\n      ⚠ {o['avert_consum_skid']}"
     return text
 
 
@@ -2249,9 +2215,8 @@ def optiune_skid_manuala(date, mw, nr_baterii, kva_baterie, forteaza_trafo, nr_f
          "garantie": _text_garantie(m.get("garantie")),
          "manual": True, "ext_gar_pct": _procent_manual(m)}
     trafo_pricing = variante_trafo(date["aux"]) if date.get("aux") is not None else []
-    consum = consum_aux_skid(putere, "", _valoare_manuala(m, "consum_skid", "Consum aux propriu / skid", 0.0))
     calcul_aux(o, _valoare_manuala(m, "aux_kva", "Trafo aux inclus", 0.0), nr_baterii, kva_baterie,
-               forteaza_trafo, trafo_pricing, consum)
+               forteaza_trafo, trafo_pricing)
     return o
 
 
@@ -2314,8 +2279,6 @@ def skid_din_pricing(date, foaie, idx):
         "brand": brand, "model": nume, "putere": putere, "putere_pcs": putere_pcs or putere,
         "pret": numar(rand[c[SKID_COL_PRET]]), "transport": numar(rand[c[SKID_COL_TRANSPORT]]),
         "com": numar(rand[c[SKID_COL_COM]]), "aux_kva": aux or "",
-        "consum_skid": (consum_aux_skid(putere, _coloana_pcs(p, COLOANA_RACIRE_PCS),
-                                        numar(_coloana_pcs(p, COLOANA_CONSUM_SKID_PCS)))[0] if p is not None else ""),
         "garantie": _ani_camp(rand[c[SKID_COL_GARANTIE]]) if len(c) > SKID_COL_GARANTIE else "", "ext_gar": "",
     }
 
@@ -3020,7 +2983,7 @@ class AplicatieOferte:
             text = (f"{v:.4f}".rstrip("0").rstrip(".").replace(".", ",") if isinstance(v, float) else str(v)) \
                 if v not in (None, "") else ""          # virgulă zecimală: "75000,5" nu se confundă cu mii
             widget.delete(0, "end")
-            widget.insert(0, "" if text in ("0", "nan") and camp in ("ext_gar", "kva_aux", "aux_kva", "consum_skid") else text)
+            widget.insert(0, "" if text in ("0", "nan") and camp in ("ext_gar", "kva_aux", "aux_kva") else text)
 
     # ---------------- tabelul BESS_Proposals ----------------
     def _construieste_panou_tabel(self, parinte):
@@ -3351,7 +3314,7 @@ class AplicatieOferte:
                   f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"))
         kva_bat = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
         txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA + "
-                "consum skid după putere și răcire (vezi la fiecare skid); "
+                "consum skid după putere (vezi la fiecare skid); "
                 + {"fara": "trafo aux extern EXCLUS (bifa „Fără trafo aux extern”)",
                    True: "trafo aux extern forțat la toate opțiunile"}.get(
                     self._mod_trafo(), "trafo-ul aux extern se adaugă automat unde skidul nu acoperă"))

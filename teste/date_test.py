@@ -43,8 +43,6 @@ def date_test():
         "Skid power": [5, 7.5, 5, 10], "Min no of imputs/ skid": [2, 3, 2, 12],
         "Max no of imputs/ skid": [4, 6, 4, 24], "Number of DC branch": [4, 6, 4, 48],
         "Aux trafo kVA": [None, None, 400, 200],          # Sinexcel: trafo aux pentru tot sistemul
-        "Racire": [None, None, None, None],
-        "Consum aux skid kVA": [None, None, None, None],
     })
     return {"bat": bat, "skid": skid, "aux": aux, "pcs": pcs, "specs": None, "skid_poc": skid_poc,
             "foaie_poc": "MV SKID for different POC", "sursa": "test", "mtime": 0, "mtime_specs": None}
