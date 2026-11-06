@@ -1807,8 +1807,14 @@ class DriveCloud:
             corp["values"] = valori
         if format_numar is not None:
             corp["numberFormat"] = format_numar
-        self._cerere("PATCH", self._url_foaie(fisier, foaie) + f"/range(address='{adresa}')",
-                     date=json.dumps(corp).encode(), tip="application/json")
+        try:
+            self._cerere("PATCH", self._url_foaie(fisier, foaie) + f"/range(address='{adresa}')",
+                         date=json.dumps(corp).encode(), tip="application/json")
+        except EroareDrive as e:
+            if "(403)" in str(e):
+                raise EroareDrive(f"{e}\nContul tău nu are drept de editare pe BESS_Proposals prin Excel Online "
+                                  "(cere-i lui Levon acces de editare la fișier).") from None
+            raise
 
     def nume_oferte(self):
         """Numele folderelor din 'Ofertare BESS/Oferte generate' (pentru numerotarea versiunilor)."""
@@ -1858,11 +1864,56 @@ def _index_coloana(litera):
 def _fisier_propuneri():
     global _CACHE_FISIER_PROPUNERI
     if _CACHE_FISIER_PROPUNERI is None:
-        _CACHE_FISIER_PROPUNERI = DRIVE.fisier_din_link(LINK_BESS_PROPOSALS)
+        try:
+            _CACHE_FISIER_PROPUNERI = DRIVE.fisier_din_link(LINK_BESS_PROPOSALS)
+        except EroareDrive as e:
+            raise EroareDrive(f"{e}\n(nu am acces la linkul fișierului BESS_Proposals: verifică dacă se "
+                              "deschide în browser cu contul tău de firmă)") from None
     return _CACHE_FISIER_PROPUNERI
 
 
 _CACHE_FISIER_PROPUNERI = None
+_COPIE_PROPUNERI = {"cale": None, "cand": 0.0, "foi": None}
+SECUNDE_COPIE_PROPUNERI = 120
+
+
+def _citeste_din_copie(foaie, adresa):
+    """Rezervă când Excel Online refuză citirea (403): descarcă fișierul și citește zona din copie."""
+    from openpyxl import load_workbook
+    if _COPIE_PROPUNERI["foi"] is None or time.time() - _COPIE_PROPUNERI["cand"] > SECUNDE_COPIE_PROPUNERI:
+        cale = os.path.join(DRIVE.folder_lucru, "BESS_Proposals (copie citire).xlsx")
+        DRIVE._descarca(*_fisier_propuneri(), cale)
+        wb = load_workbook(cale, read_only=True, data_only=True)
+        _COPIE_PROPUNERI.update(cale=cale, cand=time.time(), foi={})
+        for nume in {cfg["foaie"] for cfg in TABELE_OFERTE.values()}:
+            if nume in wb.sheetnames:
+                _COPIE_PROPUNERI["foi"][nume] = [list(r) for r in wb[nume].iter_rows(values_only=True)]
+        wb.close()
+    randuri = _COPIE_PROPUNERI["foi"].get(foaie)
+    if randuri is None:
+        raise EroareDrive(f"Nu găsesc foaia '{foaie}' în BESS_Proposals.")
+    m = re.fullmatch(r"([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?", adresa.upper())
+    c1, r1 = _index_coloana(m.group(1)), int(m.group(2))
+    c2, r2 = (_index_coloana(m.group(3)), int(m.group(4))) if m.group(3) else (c1, r1)
+    zona = []
+    for r in range(r1, r2 + 1):
+        rand = randuri[r - 1] if r - 1 < len(randuri) else []
+        zona.append([("" if (c - 1 >= len(rand) or rand[c - 1] is None) else rand[c - 1]) for c in range(c1, c2 + 1)])
+    return zona
+
+
+def citeste_propuneri(foaie, adresa):
+    """Citește o zonă din BESS_Proposals prin Excel Online; la 403 (acces refuzat) din copia descărcată."""
+    fisier = _fisier_propuneri()
+    try:
+        return DRIVE.citeste_zona(fisier, foaie, adresa)
+    except EroareDrive as e:
+        if "(403)" not in str(e):
+            raise
+        try:
+            return _citeste_din_copie(foaie, adresa)
+        except EroareDrive as e2:
+            raise EroareDrive(f"Excel Online: {e}\nDescărcare: {e2}") from None
 
 
 def contracte_din_tabel(tara, cu_liber=False):
@@ -1872,14 +1923,14 @@ def contracte_din_tabel(tara, cu_liber=False):
         raise ValueError("Tabelul BESS_Proposals se poate folosi doar cu Drive-ul conectat.")
     cfg = TABELE_OFERTE[tara]
     start, sfarsit = cfg["rand_antet"] + 1, cfg["rand_antet"] + MAX_RANDURI_TABEL
-    numere = DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"], f"{cfg['col_nr']}{start}:{cfg['col_nr']}{sfarsit}")
-    clienti = DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"],
-                                 f"{cfg['col_client']}{start}:{cfg['col_client']}{sfarsit}")
+    numere = citeste_propuneri(cfg["foaie"], f"{cfg['col_nr']}{start}:{cfg['col_nr']}{sfarsit}")
+    clienti = citeste_propuneri(cfg["foaie"],
+                                f"{cfg['col_client']}{start}:{cfg['col_client']}{sfarsit}")
     randuri = [(start + i, str(n[0]).strip(), str(c[0] or "").strip())
                for i, (n, c) in enumerate(zip(numere, clienti)) if str(n[0]).strip()]
     if not cu_liber:
         return randuri
-    alte = [DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"], f"{col}{start}:{col}{sfarsit}")
+    alte = [citeste_propuneri(cfg["foaie"], f"{col}{start}:{col}{sfarsit}")
             for col in cfg["col_libere"]]
     return [(r, nr, client, all(str(coloana[r - start][0] or "").strip() == "" for coloana in alte))
             for r, nr, client in randuri]
@@ -1901,7 +1952,7 @@ def _rand_nou(cfg):
     start, sfarsit = cfg["rand_antet"] + 1, cfg["rand_antet"] + MAX_RANDURI_TABEL
     ultimul = cfg["rand_antet"]
     for col in cfg["col_nr"] + cfg["col_libere"]:
-        valori = DRIVE.citeste_zona(_fisier_propuneri(), cfg["foaie"], f"{col}{start}:{col}{sfarsit}")
+        valori = citeste_propuneri(cfg["foaie"], f"{col}{start}:{col}{sfarsit}")
         folosite = [i for i, v in enumerate(valori) if str(v[0] or "").strip()]
         if folosite:
             ultimul = max(ultimul, start + folosite[-1])
