@@ -279,6 +279,23 @@ class SetariGenerator(unittest.TestCase):
         self.assertEqual(g.ADAOS_IMPLICIT, self.valori["ADAOS_IMPLICIT"])
 
 
+class FoldereZile(unittest.TestCase):
+    def test_versiunea_tine_cont_si_de_folderele_pe_zile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vechi = os.getcwd()
+            os.chdir(tmp)
+            try:
+                os.makedirs(os.path.join(g.FOLDER_OFERTE, "2026-11-05",
+                                         "ST1_BESS_Indicative_Proposal_Taliva_P_20MWh_10MW_v1"))
+                os.makedirs(os.path.join(g.FOLDER_OFERTE, "ST1_BESS_Indicative_Proposal_Taliva_P_20MWh_10MW_v2"))
+                self.assertEqual(g.urmatoarea_versiune("ST1", "P"), 3)
+                self.assertEqual(g.urmatoarea_versiune("ST1", "P", ["ST1_BESS_Indicative_Proposal_Taliva_P_5MWh_v7"]),
+                                 8)
+            finally:
+                os.chdir(vechi)
+        self.assertTrue(g.MODEL_FOLDER_ZI.match("2026-11-06"))
+
+
 class FoiInSetari(unittest.TestCase):
     """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
 

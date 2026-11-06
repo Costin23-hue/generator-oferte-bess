@@ -39,6 +39,9 @@ if getattr(sys, "frozen", False):
 else:
     FOLDER_PROGRAM = os.path.dirname(os.path.abspath(__file__))
 FOLDER_OFERTE = "Oferte generate"
+# Ofertele se pun pe zile: 'Oferte generate/2026-11-06/<oferta>' (formatul an-lună-zi se sortează corect după nume)
+FORMAT_FOLDER_ZI = "%Y-%m-%d"
+MODEL_FOLDER_ZI = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Actualizare automată (doar când rulează fișierul .py, nu .exe): la pornire se compară fișierele programului cu
 # cele de pe GitHub (repository public); dacă diferă, apare butonul "Versiune nouă – Actualizează".
@@ -1997,7 +2000,12 @@ class DriveCloud:
     def nume_oferte(self):
         """Numele folderelor din 'Ofertare BESS/Oferte generate' (pentru numerotarea versiunilor)."""
         try:
-            return [c["name"] for c in self._copii(self.ofertare, FOLDER_OFERTE)]
+            nume = []
+            for c in self._copii(self.ofertare, FOLDER_OFERTE):
+                nume.append(c["name"])
+                if "folder" in c and MODEL_FOLDER_ZI.match(c["name"]):       # ofertele din folderele pe zile
+                    nume += [x["name"] for x in self._copii(self.ofertare, f"{FOLDER_OFERTE}/{c['name']}")]
+            return nume
         except NegasitDrive:
             return []
 
@@ -2005,6 +2013,9 @@ class DriveCloud:
         """Urcă fișierele ofertei în 'Ofertare BESS/Oferte generate/<nume>'. Returnează linkul folderului."""
         drive_id, item_id = self.ofertare
         id_oferte = self._asigura_folder(drive_id, item_id, FOLDER_OFERTE)
+        zi = os.path.basename(os.path.dirname(os.path.abspath(folder_local)))
+        if MODEL_FOLDER_ZI.match(zi):                                       # 'Oferte generate/2026-11-06/...'
+            id_oferte = self._asigura_folder(drive_id, id_oferte, zi)
         id_oferta = self._asigura_folder(drive_id, id_oferte, os.path.basename(folder_local))
         for fisier in sorted(os.listdir(folder_local)):
             cale = os.path.join(folder_local, fisier)
@@ -2501,7 +2512,7 @@ def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=la
                                   proiect=nume_fisier_valid(intrari["proiect"]),
                                   mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) \
            + f"_v{intrari['versiune']}"
-    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, nume))
+    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, datetime.now().strftime(FORMAT_FOLDER_ZI), nume))
     os.makedirs(folder, exist_ok=True)
 
     status("Calculez în Excel...")
@@ -3714,7 +3725,8 @@ class AplicatieOferte:
                 messagebox.showwarning("BESS_Proposals", f"Oferta nu a putut fi pusă în lista de trecut în tabel:\n{e}")
         self.status("Finalizat cu succes!", "green")
         if DRIVE is not None and eroare_drive is None:
-            mesaj = f"Oferta a fost urcată în Drive:\n\n📂 Ofertare BESS / {FOLDER_OFERTE} / {r['nume']}\n\n"
+            zi = os.path.basename(os.path.dirname(r["folder"]))
+            mesaj = f"Oferta a fost urcată în Drive:\n\n📂 Ofertare BESS / {FOLDER_OFERTE} / {zi} / {r['nume']}\n\n"
         else:
             mesaj = f"Fișierele au fost salvate în:\n\n📂 {r['folder']}\n\n"
             if eroare_drive:
