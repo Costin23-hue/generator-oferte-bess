@@ -2455,7 +2455,36 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
 
 
 def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=()):
-    """Calculul în Excel + prezentarea PPTX + PDF, în 'Oferte generate/<nume>_vN'. Returnează căile fișierelor."""
+    """Calculul în Excel + prezentarea PPTX + PDF, dintr-o dată (modul motor). Returnează căile fișierelor."""
+    calcul = calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status, nume_existente)
+    return finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status, reciteste=False)
+
+
+# Celulele din Excelul de calcul citite după verificare (dacă ai modificat ceva în Excel, prezentarea ia valorile noi)
+CELULE_REZULTAT = {"pret_ddp": "H13", "pret_mwh": "H14", "ems_yearly": "K5", "cost": "G13",
+                   "ext_gar_bat": CELULA_EXT_GAR_BAT, "ext_gar_pcs": CELULA_EXT_GAR_PCS, "nr_trafo": "C7"}
+
+
+def citeste_rezultate_excel(cale):
+    """Rezultatele din Excelul de calcul salvat (valorile calculate de Excel la ultima salvare)."""
+    from openpyxl import load_workbook
+    wb = load_workbook(cale, data_only=True, read_only=True)
+    sh = wb["Sheet1"]
+    rez = {cheie: sh[celula].value for cheie, celula in CELULE_REZULTAT.items()}
+    tabel = []
+    for rand in sh.iter_rows(min_row=4, max_row=14, max_col=9, values_only=True):
+        tabel.append(list(rand))
+    wb.close()
+    if rez["pret_ddp"] is None:
+        raise ValueError("Excelul de calcul nu are valorile calculate (H13 e gol). Deschide-l, salvează-l (Ctrl+S) "
+                         "și încearcă din nou.")
+    rez = {k: (v if v is not None else 0) for k, v in rez.items()}
+    rez["tabel"] = tabel
+    return rez
+
+
+def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=()):
+    """Pasul 1: doar Excelul de calcul, în 'Oferte generate/<nume>_vN'. Prezentarea se face după verificare."""
     # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2
     intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"], nume_existente)
     nume = NUME_PREZENTARE.format(nr_proiect=nume_fisier_valid(intrari["nr_proiect"]),
@@ -2469,7 +2498,19 @@ def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lam
     c_brand_bat = date["bat"].columns[BAT_COL_BRAND]
     branduri_bat = [str(x) for x in date["bat"][c_brand_bat].dropna().unique() if str(x).strip()]
     rez = calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat, branduri_skid(date))
+    try:
+        rez["tabel"] = citeste_rezultate_excel(rez["cale_excel"])["tabel"]
+    except Exception:
+        rez["tabel"] = []
+    return {"nume": nume, "folder": folder, "rez": rez, "cale_excel": rez["cale_excel"]}
 
+
+def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, reciteste=True):
+    """Pasul 2 (după OK): prezentarea PPTX + PDF, cu valorile din Excelul de calcul (recitit, dacă l-ai modificat)."""
+    nume, folder, rez = calcul["nume"], calcul["folder"], dict(calcul["rez"])
+    if reciteste:
+        status("Recitesc Excelul de calcul...")
+        rez.update(citeste_rezultate_excel(calcul["cale_excel"]))
     status("Populez prezentarea PowerPoint...")
     inlocuiri = {
         "[DATA]": datetime.now().strftime(FORMAT_DATA),
@@ -2789,15 +2830,29 @@ class AplicatieOferte:
     def __init__(self, root):
         self.root = root
         self.root.title("Generator Oferte BESS - Taliva")
-        self.root.geometry("900x940")
+        # Fereastra se potrivește pe ecran (laptop); ce nu încape se vede cu bara de derulare / rotița mouse-ului
+        latime = min(1180, root.winfo_screenwidth() - 40)
+        inaltime = min(940, root.winfo_screenheight() - 90)
+        self.root.geometry(f"{latime}x{inaltime}+10+10")
+        # butonul principal și starea stau fix jos (mereu vizibile); restul se derulează
+        self._jos = ttk.Frame(root)
+        self._jos.pack(side="bottom", fill="x")
+        ttk.Separator(self._jos).pack(fill="x")
+        root = self._zona_derulare(root)
+        self.continut = root
 
         ttk.Label(root, text="Sistem Ofertare BESS", font=("Helvetica", 16, "bold")).pack(pady=10)
-        # Două tab-uri: oferta propriu-zisă și componentele introduse manual (cotații care nu sunt în Pricing)
+        # Tab-uri: oferta, componentele introduse manual și verificarea calculului (înainte de PowerPoint / PDF)
         taburi = ttk.Notebook(root)
         taburi.pack(padx=10, fill="x")
-        tab_oferta, tab_manual = ttk.Frame(taburi), ttk.Frame(taburi)
+        self.taburi = taburi
+        tab_oferta, tab_manual, tab_verificare = ttk.Frame(taburi), ttk.Frame(taburi), ttk.Frame(taburi)
         taburi.add(tab_oferta, text="  Ofertă  ")
         taburi.add(tab_manual, text="  Componente manuale  ")
+        taburi.add(tab_verificare, text="  Verificare calcul  ")
+        self.tab_verificare = tab_verificare
+        self._calcul_in_asteptare = None
+        self._construieste_tab_verificare(tab_verificare)
         frame = ttk.Frame(tab_oferta)
         frame.pack(side="left", padx=20, pady=10, anchor="n")
         self._construieste_panou_tabel(tab_oferta)
@@ -2896,12 +2951,12 @@ class AplicatieOferte:
         ttk.Label(frame, text="Fără nicio bifă: trafo aux extern adăugat automat doar unde skidul nu acoperă consumul.",
                   foreground="gray").grid(row=r + 7, column=0, columnspan=2, sticky="w")
 
-        self.btn = tk.Button(root, text="Previzualizare și generare", font=("Helvetica", 12, "bold"),
+        self.btn = tk.Button(self._jos, text="Previzualizare și calcul în Excel", font=("Helvetica", 12, "bold"),
                              command=self.previzualizeaza, **STIL_BUTON)
-        self.btn.pack(pady=15, fill="x", padx=20)
+        self.btn.pack(pady=(8, 4), fill="x", padx=20)
 
-        self.lbl_status = ttk.Label(root, text="Aștept date...", foreground="gray")
-        self.lbl_status.pack()
+        self.lbl_status = ttk.Label(self._jos, text="Aștept date...", foreground="gray")
+        self.lbl_status.pack(pady=(0, 6))
 
         self.lbl_sursa = ttk.Label(root, text="", foreground="gray", wraplength=860)
         self.lbl_sursa.pack(pady=5)
@@ -2920,6 +2975,137 @@ class AplicatieOferte:
     def _branduri_skid(self):
         return branduri_skid(self.date)
 
+    # ---------------- fereastră cu derulare ----------------
+    def _zona_derulare(self, parinte):
+        """Un cadru cu bară de derulare verticală care ocupă toată fereastra; întoarce cadrul interior."""
+        canvas = tk.Canvas(parinte, highlightthickness=0)
+        bara = ttk.Scrollbar(parinte, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=bara.set)
+        bara.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        interior = ttk.Frame(canvas)
+        fereastra = canvas.create_window((0, 0), window=interior, anchor="nw")
+        interior.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(fereastra, width=e.width))
+
+        def roti(e):
+            if canvas.winfo_height() < interior.winfo_reqheight():
+                pas = -1 if (getattr(e, "delta", 0) > 0 or getattr(e, "num", 0) == 4) else 1
+                canvas.yview_scroll(pas * 3, "units")
+        # rotița mouse-ului derulează doar cât timp cursorul e deasupra ferestrei principale
+        canvas.bind("<Enter>", lambda e: (canvas.bind_all("<MouseWheel>", roti), canvas.bind_all("<Button-4>", roti),
+                                          canvas.bind_all("<Button-5>", roti)))
+        canvas.bind("<Leave>", lambda e: (canvas.unbind_all("<MouseWheel>"), canvas.unbind_all("<Button-4>"),
+                                          canvas.unbind_all("<Button-5>")))
+        self._canvas = canvas
+        return interior
+
+    # ---------------- verificarea calculului (Excel) înainte de PowerPoint / PDF ----------------
+    def _construieste_tab_verificare(self, tab):
+        self.lbl_verificare = ttk.Label(tab, foreground="gray", wraplength=1000, justify="left",
+                                        text="Aici apare calculul din Excel după „Previzualizare și calcul în Excel”. "
+                                             "Verifici prețurile (poți modifica și salva Excelul), apoi dai OK și abia "
+                                             "atunci se fac PowerPoint-ul și PDF-ul.")
+        self.lbl_verificare.pack(anchor="w", padx=10, pady=8)
+        coloane = ("produs", "cant", "unit", "achizitie", "vanzare")
+        self.tabel_verificare = ttk.Treeview(tab, columns=coloane, show="headings", height=12)
+        for col, titlu, latime, aliniere in (("produs", "Produs", 380, "w"), ("cant", "Capacitate / putere", 140, "e"),
+                                             ("unit", "Buc.", 60, "e"), ("achizitie", "Valoare achiziție DAP ($)", 190, "e"),
+                                             ("vanzare", "Preț vânzare ($)", 170, "e")):
+            self.tabel_verificare.heading(col, text=titlu)
+            self.tabel_verificare.column(col, width=latime, anchor=aliniere)
+        self.tabel_verificare.pack(fill="x", padx=10)
+        self.lbl_rezumat = ttk.Label(tab, font=("Helvetica", 11, "bold"), justify="left")
+        self.lbl_rezumat.pack(anchor="w", padx=10, pady=8)
+        butoane = ttk.Frame(tab)
+        butoane.pack(anchor="w", padx=10, pady=(0, 10))
+        self.btn_deschide_excel = ttk.Button(butoane, text="📊 Deschide Excelul de calcul", state="disabled",
+                                             command=self._deschide_excel_calcul)
+        self.btn_deschide_excel.pack(side="left", padx=(0, 8))
+        self.btn_reciteste = ttk.Button(butoane, text="↻ Recitește Excelul (după ce l-ai salvat)", state="disabled",
+                                        command=self._arata_verificare)
+        self.btn_reciteste.pack(side="left", padx=(0, 8))
+        self.btn_ok = tk.Button(butoane, text="✅ OK – fă PowerPoint și PDF", font=("Helvetica", 11, "bold"),
+                                state="disabled", command=self._ok_genereaza, **STIL_BUTON)
+        self.btn_ok.pack(side="left", padx=(0, 8))
+        self.btn_renunta = ttk.Button(butoane, text="✖ Renunță la acest calcul", state="disabled",
+                                      command=self._renunta_calcul)
+        self.btn_renunta.pack(side="left")
+
+    def _stare_verificare(self, activ):
+        for b in (self.btn_deschide_excel, self.btn_reciteste, self.btn_ok, self.btn_renunta):
+            b.config(state="normal" if activ else "disabled")
+
+    def _arata_verificare(self):
+        """Tabelul din Excelul de calcul (recitit din fișierul salvat) + totalul și $/MWh."""
+        c = self._calcul_in_asteptare
+        if not c:
+            return
+        try:
+            rez = citeste_rezultate_excel(c["calcul"]["cale_excel"])
+        except Exception as e:
+            messagebox.showerror("Verificare", f"Nu pot citi Excelul de calcul:\n{e}\n\n"
+                                 "Dacă e deschis și modificat, salvează-l (Ctrl+S).")
+            return
+        self.tabel_verificare.delete(*self.tabel_verificare.get_children())
+        for rand in rez["tabel"][1:]:                     # primul rând = antetul din Excel
+            produs = rand[0]
+            if produs in (None, "") or not any(v not in (None, "") for v in (rand[6], rand[7])):
+                continue
+            fmt = lambda v: bani_eu(v, 0) if isinstance(v, (int, float)) else ("" if v is None else str(v))
+            self.tabel_verificare.insert("", "end", values=(str(produs).strip(), fmt(rand[1]), fmt(rand[2]),
+                                                             fmt(rand[6]), fmt(rand[7])))
+        i = c["intrari"]
+        self.lbl_rezumat.config(text=(
+            f"{c['calcul']['nume']}\n"
+            f"Preț total ({c['baterie']['incoterm']}): {bani_eu(rez['pret_ddp'])} $   |   "
+            f"{bani_eu(rez['pret_mwh'])} $/MWh   |   cost achiziție: {bani_eu(rez['cost'])} $   |   "
+            f"adaos {i['adaos']:g}\nEMS / an: {bani_eu(rez['ems_yearly'])} $   |   extra warranty baterie: "
+            f"{bani_eu(rez['ext_gar_bat'])} $/MWh/an, PCS: {bani_eu(rez['ext_gar_pcs'])} $/MWh/an"))
+        self.lbl_verificare.config(foreground="black", text=(
+            "Verifică prețurile. Dacă vrei să schimbi ceva, deschide Excelul, modifică, SALVEAZĂ (Ctrl+S) și apasă "
+            "„Recitește”. La OK, PowerPoint-ul și PDF-ul iau valorile din Excelul salvat."))
+
+    def _deschide_excel_calcul(self):
+        cale = self._calcul_in_asteptare["calcul"]["cale_excel"]
+        try:
+            if sys.platform == "win32":
+                os.startfile(cale)
+            else:
+                subprocess.Popen(["open", cale])
+        except Exception as e:
+            messagebox.showerror("Excel", f"Nu pot deschide fișierul:\n{cale}\n\n{e}")
+
+    def _renunta_calcul(self):
+        c = self._calcul_in_asteptare
+        if not c or not messagebox.askyesno("Renunț", "Renunți la acest calcul? (nu se face PowerPoint / PDF și "
+                                                       "nu se urcă nimic în Drive)"):
+            return
+        shutil.rmtree(c["calcul"]["folder"], ignore_errors=True)    # dacă Excelul e deschis, rămâne local
+        self._calcul_in_asteptare = None
+        self._stare_verificare(False)
+        self.tabel_verificare.delete(*self.tabel_verificare.get_children())
+        self.lbl_rezumat.config(text="")
+        self.status("Calcul anulat.", "gray")
+        self.taburi.select(0)
+
+    def _ok_genereaza(self):
+        c = self._calcul_in_asteptare
+        if not c:
+            return
+        if not messagebox.askyesno("OK", "Ai verificat calculul? Fac PowerPoint-ul și PDF-ul cu valorile din "
+                                         "Excelul salvat?"):
+            return
+        self._stare_verificare(False)
+        try:
+            self.genereaza(c)
+            self._calcul_in_asteptare = None
+            self.taburi.select(0)
+        except Exception as e:
+            self._stare_verificare(True)
+            self.status("Eroare la generare.", "red")
+            messagebox.showerror("Eroare", str(e))
+
     # ---------------- actualizare automată ----------------
     def _arata_actualizare(self, incercari=60):
         if self._actualizare is None:                       # verificarea încă rulează (max. ~1 minut)
@@ -2927,7 +3113,7 @@ class AplicatieOferte:
                 self.root.after(1000, lambda: self._arata_actualizare(incercari - 1))
             return
         if self._actualizare:
-            tk.Button(self.root, text="⬆ Versiune nouă disponibilă – Actualizează", bg="#1e7e34", fg="white",
+            tk.Button(self.continut, text="⬆ Versiune nouă disponibilă – Actualizează", bg="#1e7e34", fg="white",
                       font=("Helvetica", 10, "bold"), command=self.actualizeaza_programul)\
                 .pack(pady=(0, 8), fill="x", padx=20)
 
@@ -3402,7 +3588,7 @@ class AplicatieOferte:
                     "Ai verificat compatibilitatea componentelor? Generez oferta?"):
                 self.status("Anulat.", "gray")
                 return
-            self.genereaza(intrari, baterie, nr_baterii, lista[alegere], lista[alegere]["trafo"])
+            self.calculeaza(intrari, baterie, nr_baterii, lista[alegere], lista[alegere]["trafo"])
 
         except Exception as e:
             self.status("Eroare!", "red")
@@ -3471,9 +3657,27 @@ class AplicatieOferte:
         self.root.wait_window(win)
         return rezultat["v"]
 
-    def genereaza(self, intrari, baterie, nr_baterii, skid, trafo):
-        r = genereaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status,
-                             nume_existente=DRIVE.nume_oferte() if DRIVE is not None else ())
+    def calculeaza(self, intrari, baterie, nr_baterii, skid, trafo):
+        """Pasul 1: Excelul de calcul; apoi tab-ul „Verificare calcul” (PowerPoint / PDF abia după OK)."""
+        if self._calcul_in_asteptare and not messagebox.askyesno(
+                "Calcul în așteptare", f"Calculul „{self._calcul_in_asteptare['calcul']['nume']}” nu a primit încă "
+                                       "OK. Îl înlocuiesc cu cel nou?"):
+            self.status("Anulat.", "gray")
+            return
+        calcul = calculeaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status,
+                                   nume_existente=DRIVE.nume_oferte() if DRIVE is not None else ())
+        self._calcul_in_asteptare = {"calcul": calcul, "intrari": intrari, "baterie": baterie,
+                                     "nr_baterii": nr_baterii, "skid": skid, "trafo": trafo}
+        self._stare_verificare(True)
+        self._arata_verificare()
+        self.taburi.select(self.tab_verificare)
+        self._canvas.yview_moveto(0)
+        self.status("Calcul gata: verifică prețurile în tab-ul „Verificare calcul”, apoi dă OK.", "green")
+
+    def genereaza(self, c):
+        """Pasul 2 (după OK): PowerPoint + PDF cu valorile din Excelul salvat, apoi urcare în Drive."""
+        intrari, baterie, skid = c["intrari"], c["baterie"], c["skid"]
+        r = finalizeaza_oferta(c["calcul"], intrari, baterie, c["nr_baterii"], skid, c["trafo"], status=self.status)
         link_drive, eroare_drive = None, None
         if DRIVE is not None:
             self.status("Urc oferta în Drive...")
