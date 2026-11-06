@@ -75,7 +75,7 @@ DRIVE_ACTIV = True
 # client, în foaia țării alese), iar după verificarea ofertei, butonul "Trece în BESS_Proposals" completează rândul.
 # Generarea singură NU scrie nimic în tabel. Coloanele: litera -> câmpul din ofertă.
 LINK_BESS_PROPOSALS = ("https://talivaenerji-my.sharepoint.com/:x:/g/personal/levon_solartoday_com_tr/"
-                       "IQCrDwTTcwp6QpyYu2f5O3EkASbS1XS6XCoXNnYhyM-YNG8?e=6iU2pL")
+                       "IQCrDwTTcwp6QpyYu2f5O3EkAd-x7ecf-4rXK6cg7lbUOzI?e=a2a6WF")
 TABELE_OFERTE = {
     "Romania": {"foaie": "2026-Romania", "rand_antet": 8, "col_nr": "X", "col_client": "D", "col_libere": "CDE",
                 "coloane": {"C": "data_cerere", "D": "client", "E": "proiect", "F": "locatie", "G": "tara",
