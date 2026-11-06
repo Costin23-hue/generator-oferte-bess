@@ -2009,6 +2009,28 @@ class DriveCloud:
         except NegasitDrive:
             return []
 
+    def organizeaza_oferte_pe_zile(self):
+        """Mută ofertele puse direct în 'Oferte generate' (cele vechi sau făcute cu o versiune veche a programului)
+        în folderul zilei în care au fost create, ex. 'Oferte generate/2026-11-02/...'. Returnează câte a mutat."""
+        drive_id, item_id = self.ofertare
+        try:
+            id_oferte = self._cerere("GET", f"/drives/{drive_id}/items/{item_id}:/{_cale_url(FOLDER_OFERTE)}")["id"]
+            elemente = self._copii(self.ofertare, FOLDER_OFERTE)
+        except NegasitDrive:
+            return 0
+        foldere_zi, mutate = {}, 0
+        for el in elemente:
+            if "folder" not in el or MODEL_FOLDER_ZI.match(el["name"]) or not el.get("createdDateTime"):
+                continue
+            creat = datetime.fromisoformat(el["createdDateTime"].replace("Z", "+00:00")).astimezone()
+            zi = creat.strftime(FORMAT_FOLDER_ZI)
+            if zi not in foldere_zi:
+                foldere_zi[zi] = self._asigura_folder(drive_id, id_oferte, zi)
+            self._cerere("PATCH", f"/drives/{drive_id}/items/{el['id']}", tip="application/json",
+                         date=json.dumps({"parentReference": {"id": foldere_zi[zi]}}).encode())
+            mutate += 1
+        return mutate
+
     def urca_oferta(self, folder_local):
         """Urcă fișierele ofertei în 'Ofertare BESS/Oferte generate/<nume>'. Returnează linkul folderului."""
         drive_id, item_id = self.ofertare
@@ -2998,6 +3020,8 @@ class AplicatieOferte:
         ttk.Button(root, text="⚙ Setări generator", command=self.dialog_setari).pack(pady=(0, 8))
         self._actualizare = None
         threading.Thread(target=lambda: setattr(self, "_actualizare", cauta_actualizare()), daemon=True).start()
+        if DRIVE is not None:                     # ofertele vechi din 'Oferte generate' -> foldere pe zile (în fundal)
+            threading.Thread(target=self._organizeaza_pe_zile, daemon=True).start()
         self.root.after(1000, self._arata_actualizare)
         self.probleme_pricing = None
         if self.date:
@@ -3138,6 +3162,12 @@ class AplicatieOferte:
             self._stare_verificare(True)
             self.status("Eroare la generare.", "red")
             messagebox.showerror("Eroare", str(e))
+
+    def _organizeaza_pe_zile(self):
+        try:
+            DRIVE.organizeaza_oferte_pe_zile()
+        except Exception:
+            pass                                   # se reîncearcă la următoarea pornire
 
     # ---------------- actualizare automată ----------------
     def _arata_actualizare(self, incercari=60):
