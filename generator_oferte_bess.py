@@ -2556,7 +2556,8 @@ def intrari_din_cerere(c):
         "mwh": mwh,
         "mw": numar_cerere(c.get("mw")),
         # EMS: dacă nu e completat, aceeași regulă ca în fereastră (sub prag / de la prag)
-        "ems": numar_cerere(c.get("ems"), float(EMS_AUTO if mwh >= EMS_PRAG_MWH else EMS_SUB_PRAG)),
+        "ems": numar_cerere(c.get("ems"), ems_pentru(mwh)),
+        "ems_auto": not str(c.get("ems", "") or "").strip(),
         "eng": numar_cerere(c.get("eng"), 0.0),
         "adaos": numar_cerere(c.get("adaos"), 1.10),
         "curs": numar_cerere(c.get("curs"), 0.89),
@@ -2570,6 +2571,24 @@ def cale_onedrive(cale_locala):
         return None
     radacina = os.path.dirname(os.getcwd())
     return "/" + os.path.relpath(cale_locala, radacina).replace(os.sep, "/")
+
+
+def ems_pentru(mwh):
+    """Valoarea EMS (USD) după capacitate: de la EMS_PRAG_MWH în sus EMS_AUTO, sub prag EMS_SUB_PRAG."""
+    return float(EMS_AUTO if mwh >= EMS_PRAG_MWH - 1e-9 else EMS_SUB_PRAG)
+
+
+def ajusteaza_ems(intrari, p):
+    """EMS automat după capacitatea OFERTATĂ (nr. baterii x capacitate), nu după cea cerută:
+    ex. cerut 13,5 MWh -> 3 x 5,015 = 15,045 MWh -> EMS de la prag. Doar dacă EMS nu a fost scris de mână.
+    Returnează valoarea nouă sau None dacă nu s-a schimbat nimic."""
+    if not intrari.get("ems_auto"):
+        return None
+    ems = ems_pentru(p["nr_baterii"] * p["baterie"]["cap"])
+    if ems == intrari["ems"]:
+        return None
+    intrari["ems"] = ems
+    return ems
 
 
 def pregateste_din_cerere(date, baterii_map, c):
@@ -2586,6 +2605,7 @@ def pregateste_din_cerere(date, baterii_map, c):
                           str(c.get("trafo", "")).strip().lower() in ("true", "1", "da", "yes"))
     if p["specs_lipsa"]:
         avert.append(f"{p['specs_lipsa']}: Configuration și Weight vor fi goale în prezentare.")
+    ajusteaza_ems(intrari, p)
     return intrari, avert, p
 
 
@@ -3275,7 +3295,7 @@ class AplicatieOferte:
             return
         self._setare_auto = True
         try:
-            self.ems_var.set(f"{EMS_AUTO if mwh >= EMS_PRAG_MWH else EMS_SUB_PRAG:g}")
+            self.ems_var.set(f"{ems_pentru(mwh):g}")
         finally:
             self._setare_auto = False
 
@@ -3293,6 +3313,7 @@ class AplicatieOferte:
                 "mwh": float(g("Capacitate (MWh):").replace(",", ".")),
                 "mw": float(g("Putere (MW):").replace(",", ".")),
                 "ems": float(g("Valoare EMS (USD):").replace(",", ".")),
+                "ems_auto": not self.ems_manual,
                 "eng": float(g("Valoare ENG (USD):").replace(",", ".")),
                 "adaos": float(g("Adaos Comercial (Margin):").replace(",", ".")),
                 "curs": float(g("Curs USD/EUR:").replace(",", ".")),
@@ -3356,6 +3377,13 @@ class AplicatieOferte:
                 self.status("Anulat.", "gray")
                 return
 
+            ems_nou = ajusteaza_ems(intrari, p)
+            if ems_nou is not None:                    # EMS după capacitatea ofertată; câmpul arată valoarea nouă
+                self._setare_auto = True
+                try:
+                    self.ems_var.set(f"{ems_nou:g}")
+                finally:
+                    self._setare_auto = False
             self._auto_info = (p.get("auto_comparatie"), p.get("auto_excluse"))
             alegere = self.dialog_previzualizare(intrari, baterie, nr_baterii, lista, exact,
                                                  raport_skiduri(optiuni, motive))
@@ -3390,6 +3418,9 @@ class AplicatieOferte:
         txt = (f"Cerut: {intrari['mwh']:g} MWh / {intrari['mw']:g} MW, conexiune {intrari['poc_kv']:g} kV\n"
                f"Baterii: {nr_baterii} x {baterie['tip']} = {cap_prop:.3f} MWh "
                f"\nLivrare: {INCOTERMS[baterie['incoterm']]}"
+               f"\nEMS: {bani_eu(intrari['ems'], 0)} $"
+               + (f" (automat după capacitatea ofertată {cap_prop:.3f} MWh, prag {EMS_PRAG_MWH:g} MWh)"
+                  if intrari.get("ems_auto") else " (scris de mână)")
                + (f"\nPreț {baterie['incoterm']}: {baterie['pret']:,.2f} $/MWh (✎ baterie introdusă manual, "
                   f"{baterie['brand']}) -> baterii: {cost_bat:,.0f} $" if baterie.get("manual") else
                   f"\nPreț {baterie['incoterm']} (coloana {baterie['coloana_pret']}): "

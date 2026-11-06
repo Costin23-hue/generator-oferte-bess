@@ -91,6 +91,20 @@ class Oferte(unittest.TestCase):
         p = self.oferta(g.OPTIUNE_AUTO_BATERIE, 40, 10)
         self.assertEqual(p["baterie"]["tip"], REPT)
 
+    def test_ems_dupa_capacitatea_ofertata(self):
+        # cerut 13,5 MWh -> 3 x 5,015 = 15,045 MWh >= 15 -> EMS de la prag (3.500), nu cel sub prag (6.500)
+        intrari = dict(intrari_test(13.5, 5), ems=g.ems_pentru(13.5), ems_auto=True)
+        p = g.pregateste_oferta(self.date, self.baterii, intrari, JINKO_2H, "DDP", "Oricare", None, None)
+        self.assertEqual(intrari["ems"], 6500)
+        self.assertEqual(g.ajusteaza_ems(intrari, p), 3500)
+        self.assertEqual(intrari["ems"], 3500)
+
+    def test_ems_scris_de_mana_nu_se_schimba(self):
+        intrari = dict(intrari_test(13.5, 5), ems=5000, ems_auto=False)
+        p = g.pregateste_oferta(self.date, self.baterii, intrari, JINKO_2H, "DDP", "Oricare", None, None)
+        self.assertIsNone(g.ajusteaza_ems(intrari, p))
+        self.assertEqual(intrari["ems"], 5000)
+
     def test_fara_trafo_aux(self):
         o = self.oferta(JINKO_2H, 20, 10, trafo="fara")["lista"][0]
         self.assertFalse(o.get("trafo"))
