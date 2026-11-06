@@ -61,6 +61,9 @@ FISIER_SETARI = os.path.join(_FOLDER_SETARI, "Ofertare BESS", "setari.json")
 
 FISIER_SPECS = "Specificatii_baterii_BESS.xlsx"   # coloane: Producător / Produs | Model | Configuration | Weight
 FISIER_PCS = "PCS - MV skid.xlsx"
+# PCS-urile și specificațiile pot sta și ca foi în 'Setari generator.xlsx' (au prioritate față de fișierele separate)
+FOAIE_PCS_SETARI = "PCS - MV skid"
+FOAIE_SPECS_SETARI = "Specificatii baterii"
 
 # Lucrul direct cu Drive-ul (Microsoft Graph), fără foldere sincronizate: fiecare utilizator se loghează
 # o dată cu contul de firmă; fișierele se descarcă din cele două foldere, iar ofertele se urcă în
@@ -534,9 +537,71 @@ class PricingNegasit(FileNotFoundError):
 
 
 def fisiere_lipsa(folder="."):
-    """Fișierele care trebuie să stea în folderul 'Ofertare BESS' și lipsesc."""
-    return [f for f in (FISIER_PCS, FISIER_SPECS, FISIER_EXCEL_TEMPLATE, FISIER_PPT_TEMPLATE)
-            if not os.path.exists(os.path.join(folder, f))]
+    """Fișierele care trebuie să stea în folderul 'Ofertare BESS' și lipsesc.
+    PCS și specificațiile nu mai sunt necesare separat dacă sunt foi în 'Setari generator.xlsx'."""
+    foi = foi_setari(os.path.join(folder, FISIER_SETARI_GENERATOR))
+    necesare = [FISIER_EXCEL_TEMPLATE, FISIER_PPT_TEMPLATE] + \
+        [f for f, foaie in ((FISIER_PCS, FOAIE_PCS_SETARI), (FISIER_SPECS, FOAIE_SPECS_SETARI)) if foaie not in foi]
+    return [f for f in necesare if not os.path.exists(os.path.join(folder, f))]
+
+
+def foi_setari(cale=None):
+    """Numele foilor din 'Setari generator.xlsx' (listă goală dacă fișierul nu există)."""
+    cale = cale or FISIER_SETARI_GENERATOR
+    if not os.path.exists(cale):
+        return []
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(cale, read_only=True)
+        nume = list(wb.sheetnames)
+        wb.close()
+        return nume
+    except Exception:
+        return []
+
+
+def _evalueaza_formula(formula, valoare_celula, adancime=0):
+    """Formule simple (ex. '=B2*C2', '=D29/4'): referințe de celule și + - * / ( ). Altfel None.
+    Fișierele salvate de program (nu de Excel) nu au valorile formulelor calculate, așa că le calculăm aici."""
+    if adancime > 20:
+        return None
+    expr = formula.lstrip("=").replace("$", "")
+    def inlocuieste(m):
+        v = valoare_celula(m.group(1), int(m.group(2)), adancime + 1)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError
+        return f"({v!r})"
+    try:
+        expr = re.sub(r"\b([A-Z]{1,3})(\d+)\b", inlocuieste, expr.upper())
+        if not re.fullmatch(r"[\d\s.+\-*/()e]*", expr):
+            return None
+        return float(eval(expr, {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
+def citeste_foaie_cu_formule(cale, foaie):
+    """O foaie ca DataFrame (antet pe rândul 1), cu formulele simple calculate dacă lipsesc valorile din Excel."""
+    from openpyxl import load_workbook
+    with tempfile.TemporaryDirectory() as tmp:
+        copie = os.path.join(tmp, os.path.basename(cale))
+        shutil.copy2(cale, copie)
+        sh_f = load_workbook(copie)[foaie]
+        sh_v = load_workbook(copie, data_only=True)[foaie]
+
+    def valoare(col, rand, adancime=0):
+        v = sh_v[f"{col}{rand}"].value
+        f = sh_f[f"{col}{rand}"].value
+        if v is None and isinstance(f, str) and f.startswith("="):
+            return _evalueaza_formula(f, valoare, adancime)
+        return v
+
+    randuri = []
+    for r in range(1, sh_f.max_row + 1):
+        randuri.append([valoare(litera_coloana(c - 1), r) for c in range(1, sh_f.max_column + 1)])
+    antet = [str(v).strip() if v is not None else f"col{i}" for i, v in enumerate(randuri[0])] if randuri else []
+    df = pd.DataFrame(randuri[1:], columns=antet).dropna(how="all")
+    return df.loc[:, [c for c in df.columns if not (c.startswith("col") and df[c].isna().all())]]
 
 
 def alege_folder_lucru():
@@ -569,7 +634,10 @@ def cale_pricing():
 
 
 def cale_specs():
-    """Specificatii_baterii_BESS.xlsx din folderul programului, altfel None."""
+    """De unde se citesc specificațiile: 'Setari generator.xlsx' (foaia FOAIE_SPECS_SETARI),
+    altfel Specificatii_baterii_BESS.xlsx, altfel None."""
+    if FOAIE_SPECS_SETARI in foi_setari():
+        return FISIER_SETARI_GENERATOR
     return FISIER_SPECS if os.path.exists(FISIER_SPECS) else None
 
 
@@ -600,9 +668,19 @@ def incarca_date():
     df_bat, df_skid, df_aux = foi[FOAIE_BATERIE], foi[FOAIE_SKID], foi["Auxiliary Transformer"]
     nume_poc = next((f for f in foi if FOAIE_SKID_POC_CONTINE in f.lower()), None)
     df_poc = fixeaza_antet(foi[nume_poc]) if nume_poc else None
-    df_pcs = citeste_copie(FISIER_PCS, ["Sheet1"])["Sheet1"]
+    foi_s = foi_setari()
+    if FOAIE_PCS_SETARI in foi_s:
+        df_pcs = citeste_foaie_cu_formule(FISIER_SETARI_GENERATOR, FOAIE_PCS_SETARI)
+    elif os.path.exists(FISIER_PCS):
+        df_pcs = citeste_copie(FISIER_PCS, ["Sheet1"])["Sheet1"]
+    else:
+        raise ValueError(f"Nu găsesc PCS-urile: nici foaia '{FOAIE_PCS_SETARI}' în {FISIER_SETARI_GENERATOR}, "
+                         f"nici fișierul {FISIER_PCS} în Ofertare BESS.")
     sursa_specs = cale_specs()
-    df_specs = citeste_copie(sursa_specs, None) if sursa_specs else None
+    if sursa_specs == FISIER_SETARI_GENERATOR:
+        df_specs = citeste_foaie_cu_formule(FISIER_SETARI_GENERATOR, FOAIE_SPECS_SETARI)
+    else:
+        df_specs = citeste_copie(sursa_specs, None) if sursa_specs else None
     for df in (df_bat, df_skid, df_aux, df_pcs, df_specs, df_poc):
         if df is not None:
             df.columns = df.columns.astype(str).str.strip()
@@ -1852,6 +1930,11 @@ class DriveCloud:
                 listari[folder] = {c["name"].lower(): c for c in self._copii(folder) if "file" in c}
             element = listari[folder].get(nume.lower())
             if element is None and nume == FISIER_SETARI_GENERATOR:      # opțional: fără el rămân regulile din cod
+                if os.path.exists(os.path.join(self.folder_lucru, nume)):
+                    os.remove(os.path.join(self.folder_lucru, nume))
+                stare.pop(nume, None)
+                continue
+            if element is None and nume in (FISIER_PCS, FISIER_SPECS):      # pot fi foi în Setari generator.xlsx
                 if os.path.exists(os.path.join(self.folder_lucru, nume)):
                     os.remove(os.path.join(self.folder_lucru, nume))
                 stare.pop(nume, None)

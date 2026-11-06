@@ -251,6 +251,28 @@ class SetariGenerator(unittest.TestCase):
         self.assertEqual(g.ADAOS_IMPLICIT, self.valori["ADAOS_IMPLICIT"])
 
 
+class FoiInSetari(unittest.TestCase):
+    """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
+
+    def test_pcs_cu_formule(self):
+        from openpyxl import Workbook
+        with tempfile.TemporaryDirectory() as tmp:
+            cale = os.path.join(tmp, "Setari generator.xlsx")
+            wb = Workbook()
+            sh = wb.active
+            sh.title = g.FOAIE_PCS_SETARI
+            sh.append(["SKID", "PCS power", "no / frame", "Skid power"])
+            sh.append(["SES4H-5000-EX-MV", 1.25, 4, "=B2*C2"])
+            sh.append(["Frame 4 : MV Skid 5150kVA", "=D3/4", "4 frame", 5.15])
+            sh.append(["Gresit", "=SUM(B2:B3)", 1, "=B4*2"])
+            wb.save(cale)
+            self.assertIn(g.FOAIE_PCS_SETARI, g.foi_setari(cale))
+            df = g.citeste_foaie_cu_formule(cale, g.FOAIE_PCS_SETARI)
+        self.assertEqual(df["Skid power"].tolist()[:2], [5.0, 5.15])
+        self.assertAlmostEqual(df["PCS power"].tolist()[1], 1.2875)
+        self.assertTrue(df.isna().iloc[2]["PCS power"])      # formulă necunoscută -> gol, fără eroare
+
+
 class Actualizare(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
