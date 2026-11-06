@@ -85,7 +85,16 @@ class Oferte(unittest.TestCase):
         self.assertEqual(p["baterie"]["tip"], JINKO_2H)
         excluse = " ".join(p["auto_excluse"])
         self.assertIn(REPT, excluse)                         # REPT = 4 ore
-        self.assertIn("JKE-5015K-4H-LAA", excluse)
+
+    def test_lista_baterii_2h_si_rack_uri_scoase(self):
+        lista = g.baterii_din_lista(self.baterii)
+        self.assertIn("JKE-4597K-2H-LAA", lista)            # varianta cu rack-uri scoase
+        self.assertIn(REPT, lista)
+        self.assertNotIn("JKE-5015K-4H-LAA", lista)          # 4H nu mai apare (cele de 2H merg și la 4 ore)
+
+    def test_baterie_cu_rack_uri_scoase(self):
+        p = self.oferta("JKE-4597K-2H-LAA", 18, 10)
+        self.assertEqual(p["nr_baterii"], 4)                 # 4 x 4,597 = 18,388 MWh
 
     def test_auto_alege_cea_mai_ieftina(self):
         p = self.oferta(g.OPTIUNE_AUTO_BATERIE, 40, 10)

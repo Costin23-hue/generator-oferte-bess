@@ -23,6 +23,7 @@ def date_test():
         _baterie("2026-09-01", "Jinko", "JKE-5015K-2H-LAA", 5.015, 80000, 85000, 4000),
         _baterie("2026-09-01", "Jinko", "JKE-6250K-2H-LAA", 6.25, 78000, 83000, 4500),
         _baterie("2026-09-01", "Jinko", "JKE-5015K-4H-LAA", 5.015, 70000, 75000, 4000),
+        _baterie("2026-09-01", "Jinko", "JKE-4597K-2H-LAA", 4.597, 84000, 89000, 4000),   # 11 rack-uri
         _baterie("2026-09-01", "REPT", "REPT 5,015", 5.015, 60000, 65000, 4000, 10),
     ], columns=COLOANE_BATERIE)
     skid = pd.DataFrame([

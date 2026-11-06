@@ -114,8 +114,10 @@ FISIER_EXCEL_TEMPLATE = "Project Proposal TAMPLATE.xlsx"
 FISIER_PPT_TEMPLATE = "TEMPLATE BESS.pptx"
 
 BATERIE_IMPLICITA = "JKE-5015K-2H-LAA"
-# Bateriile afișate în listă: doar modelele care conțin unul dintre aceste texte (Jinko 5,015 și 6,25 MWh, REPT)
-BATERII_IN_LISTA = ("5015", "6250", "REPT")
+# Bateriile afișate în listă: doar modelele care conțin unul dintre aceste texte. "2H-" = toate bateriile Jinko de 2 ore
+# (5,015, 6,25 și variantele cu rack-uri scoase, ex. JKE-4597K-2H-LAA); cele de 2 ore merg și la proiecte de 4 ore,
+# așa că variantele 4H nu mai apar. Plus REPT.
+BATERII_IN_LISTA = ("2H-", "REPT")
 # "Auto": se încearcă toate bateriile din listă (cu durata potrivită proiectului) și se alege oferta cea mai ieftină
 OPTIUNE_AUTO_BATERIE = "Auto (cea mai ieftină)"
 # Durata bateriilor care nu au '-2H-' / '-4H-' în nume
