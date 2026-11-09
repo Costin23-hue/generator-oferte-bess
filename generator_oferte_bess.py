@@ -45,6 +45,11 @@ FOLDER_OFERTE = "Oferte generate"
 # Ofertele se pun pe zile: 'Oferte generate/2026-11-06/<oferta>' (formatul an-lună-zi se sortează corect după nume)
 FORMAT_FOLDER_ZI = "%Y-%m-%d"
 MODEL_FOLDER_ZI = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Calcul de probă: Client = "test" și Nume Proiect = "test" -> nr. "TEST", nimic în BESS_Proposals, nimic păstrat în
+# Drive; fișierele stau temporar în 'Oferte generate/_teste' și se șterg la Renunță / alt calcul / închidere.
+TEXT_TEST = "test"
+FOLDER_TESTE = "_teste"
+NR_PROIECT_TEST = "TEST"
 
 # Actualizare automată (doar când rulează fișierul .py, nu .exe): la pornire se compară fișierele programului cu
 # cele de pe GitHub (repository public); dacă diferă, apare butonul "Versiune nouă – Actualizează".
@@ -2154,7 +2159,8 @@ class DriveCloud:
             return 0
         foldere_zi, mutate = {}, 0
         for el in elemente:
-            if "folder" not in el or MODEL_FOLDER_ZI.match(el["name"]) or not el.get("createdDateTime"):
+            if "folder" not in el or MODEL_FOLDER_ZI.match(el["name"]) or el["name"].startswith("_") \
+                    or not el.get("createdDateTime"):
                 continue
             creat = datetime.fromisoformat(el["createdDateTime"].replace("Z", "+00:00")).astimezone()
             zi = creat.strftime(FORMAT_FOLDER_ZI)
@@ -2170,9 +2176,19 @@ class DriveCloud:
         drive_id, item_id = self.ofertare
         id_oferte = self._asigura_folder(drive_id, item_id, FOLDER_OFERTE)
         zi = os.path.basename(os.path.dirname(os.path.abspath(folder_local)))
-        if MODEL_FOLDER_ZI.match(zi):
+        if MODEL_FOLDER_ZI.match(zi) or zi == FOLDER_TESTE:
             id_oferte = self._asigura_folder(drive_id, id_oferte, zi)
         return self._asigura_folder(drive_id, id_oferte, os.path.basename(folder_local))
+
+    def sterge_teste(self):
+        """Șterge folderul cu calculele de probă rămase în Drive (ex. dacă programul s-a închis brusc)."""
+        drive_id, item_id = self.ofertare
+        try:
+            el = self._cerere("GET", f"/drives/{drive_id}/items/{item_id}:/"
+                                     f"{_cale_url(FOLDER_OFERTE + '/' + FOLDER_TESTE)}")
+        except NegasitDrive:
+            return
+        self.sterge((drive_id, el["id"]))
 
     def urca_fisier(self, id_folder, nume, cale_locala):
         """Urcă un fișier în folderul dat; returnează (drive_id, item_id)."""
@@ -2730,6 +2746,11 @@ def citeste_rezultate(calcul):
     return citeste_rezultate_excel(calcul["cale_excel"])
 
 
+def e_calcul_test(intrari):
+    """Calcul de probă (estimare rapidă): Client = 'test' și Nume Proiect = 'test'."""
+    return all(str(intrari.get(c, "")).strip().lower() == TEXT_TEST for c in ("client", "proiect"))
+
+
 def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=(),
                       online=False):
     """Pasul 1: doar Excelul de calcul, în 'Oferte generate/<nume>_vN'. Prezentarea se face după verificare."""
@@ -2739,7 +2760,8 @@ def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=la
                                   proiect=nume_fisier_valid(intrari["proiect"]),
                                   mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) \
            + f"_v{intrari['versiune']}"
-    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, datetime.now().strftime(FORMAT_FOLDER_ZI), nume))
+    zi = FOLDER_TESTE if e_calcul_test(intrari) else datetime.now().strftime(FORMAT_FOLDER_ZI)
+    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, zi, nume))
     os.makedirs(folder, exist_ok=True)
 
     status("Calculez în Excel...")
@@ -3248,6 +3270,8 @@ class AplicatieOferte:
         self.probleme_pricing = None
         if self.date:
             self.root.after(200, self._verifica_pricing)
+        shutil.rmtree(os.path.join(FOLDER_OFERTE, FOLDER_TESTE), ignore_errors=True)   # resturi locale de probă
+        self.root.protocol("WM_DELETE_WINDOW", self.la_inchidere)
         if DRIVE is not None:
             self.root.after(300, self.ia_nr_contract)
 
@@ -3307,7 +3331,7 @@ class AplicatieOferte:
         self.btn_ok = tk.Button(butoane, text="✅ OK – fă PowerPoint și PDF", font=("Helvetica", 11, "bold"),
                                 state="disabled", command=self._ok_genereaza, **STIL_BUTON)
         self.btn_ok.pack(side="left", padx=(0, 8))
-        self.btn_renunta = ttk.Button(butoane, text="✖ Renunță la acest calcul", state="disabled",
+        self.btn_renunta = ttk.Button(butoane, text="🗑 Renunță și șterge calculul", state="disabled",
                                       command=self._renunta_calcul)
         self.btn_renunta.pack(side="left")
 
@@ -3341,6 +3365,12 @@ class AplicatieOferte:
             f"{bani_eu(rez['pret_mwh'])} $/MWh   |   cost achiziție: {bani_eu(rez['cost'])} $   |   "
             f"adaos {i['adaos']:g}\nEMS / an: {bani_eu(rez['ems_yearly'])} $   |   extra warranty baterie: "
             f"{bani_eu(rez['ext_gar_bat'])} $/MWh/an, PCS: {bani_eu(rez['ext_gar_pcs'])} $/MWh/an"))
+        if c.get("test"):
+            self.lbl_verificare.config(foreground="#b35c00", text=(
+                "🧪 CALCUL DE PROBĂ (Client și Proiect = „test”): nu se păstrează nimic în Drive și nimic în "
+                "BESS_Proposals. Se șterge la „Renunță”, la următorul calcul sau la închiderea programului; "
+                "OK face doar un PDF de probă, pe care îl deschide local."))
+            return
         self.lbl_verificare.config(foreground="black", text=(
             "Verifică prețurile. Dacă vrei să schimbi ceva, deschide Excelul (se deschide în browser, în Excel Online, "
             "și se salvează singur), modifică și apasă „Recitește”. La OK, PowerPoint-ul și PDF-ul iau valorile din "
@@ -3367,18 +3397,31 @@ class AplicatieOferte:
         if not c or not messagebox.askyesno("Renunț", "Renunți la acest calcul? (nu se face PowerPoint / PDF și "
                                                        "nu se urcă nimic în Drive)"):
             return
-        shutil.rmtree(c["calcul"]["folder"], ignore_errors=True)    # dacă Excelul e deschis, rămâne local
-        if c["calcul"]["rez"].get("folder_drive"):                 # mod Microsoft 365: calculul e și în Drive
-            try:
-                DRIVE.sterge(c["calcul"]["rez"]["folder_drive"])
-            except Exception as e:
-                messagebox.showwarning("Renunț", f"Nu am putut șterge calculul din Drive:\n{e}")
+        self._sterge_calcul(c)
         self._calcul_in_asteptare = None
         self._stare_verificare(False)
         self.tabel_verificare.delete(*self.tabel_verificare.get_children())
         self.lbl_rezumat.config(text="")
         self.status("Calcul anulat.", "gray")
         self.taburi.select(0)
+
+    def _sterge_calcul(self, c, arata_erori=True):
+        """Șterge un calcul: folderul local și, în modul Microsoft 365, folderul din Drive."""
+        shutil.rmtree(c["calcul"]["folder"], ignore_errors=True)    # dacă Excelul e deschis, rămâne local
+        if c["calcul"]["rez"].get("folder_drive"):                 # mod Microsoft 365: calculul e și în Drive
+            try:
+                DRIVE.sterge(c["calcul"]["rez"]["folder_drive"])
+            except Exception as e:
+                if arata_erori:
+                    messagebox.showwarning("Ștergere", f"Nu am putut șterge calculul din Drive:\n{e}")
+
+    def la_inchidere(self):
+        """La închiderea programului: calculele de probă se șterg (local și din Drive)."""
+        c = self._calcul_in_asteptare
+        if c and c.get("test"):
+            self._sterge_calcul(c, arata_erori=False)
+        shutil.rmtree(os.path.join(FOLDER_OFERTE, FOLDER_TESTE), ignore_errors=True)
+        self.root.destroy()
 
     def _ok_genereaza(self):
         c = self._calcul_in_asteptare
@@ -3398,6 +3441,10 @@ class AplicatieOferte:
             messagebox.showerror("Eroare", str(e))
 
     def _organizeaza_pe_zile(self):
+        try:
+            DRIVE.sterge_teste()                   # calcule de probă rămase (ex. program închis brusc)
+        except Exception:
+            pass
         try:
             DRIVE.organizeaza_oferte_pe_zile()
         except Exception:
@@ -3631,7 +3678,7 @@ class AplicatieOferte:
 
     def _verifica_nr_contract(self, intrari):
         """Înainte de generare: nr. de contract există în tabel și e liber (sau al aceluiași client)?"""
-        if DRIVE is None:
+        if DRIVE is None or e_calcul_test(intrari):
             return True
         tara = self.combo_tara.get()
         try:
@@ -3811,7 +3858,11 @@ class AplicatieOferte:
         try:
             self.status("Verific datele...")
             nr_scris = self.intrari["Nr. proiect:"].get().strip()
-            if DRIVE is not None and (not nr_scris or "XXX" in nr_scris.upper()):
+            test = all(self.intrari[k].get().strip().lower() == TEXT_TEST for k in ("Client:", "Nume Proiect:"))
+            if test and (not nr_scris or "XXX" in nr_scris.upper()):
+                self.intrari["Nr. proiect:"].delete(0, "end")          # calcul de probă: fără nr. din tabel
+                self.intrari["Nr. proiect:"].insert(0, NR_PROIECT_TEST)
+            elif DRIVE is not None and (not nr_scris or "XXX" in nr_scris.upper()):
                 self.ia_nr_contract()             # nr. de contract automat din BESS_Proposals
             intrari = self.citeste_intrari()
             erori, avert = valideaza(intrari)
@@ -3956,26 +4007,53 @@ class AplicatieOferte:
 
     def calculeaza(self, intrari, baterie, nr_baterii, skid, trafo):
         """Pasul 1: Excelul de calcul; apoi tab-ul „Verificare calcul” (PowerPoint / PDF abia după OK)."""
-        if self._calcul_in_asteptare and not messagebox.askyesno(
-                "Calcul în așteptare", f"Calculul „{self._calcul_in_asteptare['calcul']['nume']}” nu a primit încă "
+        vechi = self._calcul_in_asteptare
+        if vechi and not vechi.get("test") and not messagebox.askyesno(
+                "Calcul în așteptare", f"Calculul „{vechi['calcul']['nume']}” nu a primit încă "
                                        "OK. Îl înlocuiesc cu cel nou?"):
             self.status("Anulat.", "gray")
             return
+        if vechi and vechi.get("test"):
+            self._sterge_calcul(vechi)                 # calculul de probă anterior nu se păstrează
         calcul = calculeaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status,
                                    online=self.mod_online.get(),
                                    nume_existente=DRIVE.nume_oferte() if DRIVE is not None else ())
         self._calcul_in_asteptare = {"calcul": calcul, "intrari": intrari, "baterie": baterie,
-                                     "nr_baterii": nr_baterii, "skid": skid, "trafo": trafo}
+                                     "nr_baterii": nr_baterii, "skid": skid, "trafo": trafo,
+                                     "test": e_calcul_test(intrari)}
         self._stare_verificare(True)
         self._arata_verificare()
         self.taburi.select(self.tab_verificare)
         self._canvas.yview_moveto(0)
         self.status("Calcul gata: verifică prețurile în tab-ul „Verificare calcul”, apoi dă OK.", "green")
 
+    def _termina_test(self, c, r):
+        """Calcul de probă: PDF-ul se deschide local; din Drive se șterge tot, nimic nu ajunge în BESS_Proposals.
+        Fișierele locale se șterg la închiderea programului."""
+        if c["calcul"]["rez"].get("folder_drive"):
+            try:
+                DRIVE.sterge(c["calcul"]["rez"]["folder_drive"])
+            except Exception:
+                pass
+        self.status("Calcul de probă gata (nu s-a salvat nimic în Drive).", "green")
+        deschide = r["cale_pdf"] if r.get("cale_pdf") and os.path.exists(r["cale_pdf"]) else r["cale_pptx"]
+        try:
+            if sys.platform == "win32":
+                os.startfile(deschide)
+            else:
+                subprocess.Popen(["open", deschide])
+        except Exception:
+            pass
+        messagebox.showinfo("Calcul de probă", "Am deschis PDF-ul de probă.\n\nNu s-a salvat nimic în Drive și "
+                            "nimic în BESS_Proposals; fișierele locale se șterg la închiderea programului.")
+
     def genereaza(self, c):
         """Pasul 2 (după OK): PowerPoint + PDF cu valorile din Excelul salvat, apoi urcare în Drive."""
         intrari, baterie, skid = c["intrari"], c["baterie"], c["skid"]
         r = finalizeaza_oferta(c["calcul"], intrari, baterie, c["nr_baterii"], skid, c["trafo"], status=self.status)
+        if c.get("test"):
+            self._termina_test(c, r)
+            return
         link_drive, eroare_drive = None, None
         if DRIVE is not None:
             self.status("Urc oferta în Drive...")

@@ -435,6 +435,24 @@ class Microsoft365(unittest.TestCase):
         self.assertEqual(self.cereri[-1][1], "/drives/D/items/PPTX/content?format=pdf")
 
 
+class CalculDeProba(unittest.TestCase):
+    def test_client_si_proiect_test(self):
+        self.assertTrue(g.e_calcul_test({"client": "Test", "proiect": " test "}))
+        self.assertFalse(g.e_calcul_test({"client": "test", "proiect": "Proiect X"}))
+        self.assertFalse(g.e_calcul_test({"client": "GEP", "proiect": "test"}))
+
+    def test_folderul_de_teste_nu_se_muta_pe_zile(self):
+        import json
+        cereri = []
+        d = g.DriveCloud.__new__(g.DriveCloud)
+        d.ofertare = ("D", "ROOT")
+        d._cerere = lambda m, c, date=None, **k: cereri.append((m, c)) or {"id": "OFERTE"}
+        d._copii = lambda f, sub="": [{"name": "_teste", "folder": {}, "id": "T",
+                                       "createdDateTime": "2026-11-09T10:00:00Z"}]
+        self.assertEqual(d.organizeaza_oferte_pe_zile(), 0)
+        self.assertFalse(any(m == "PATCH" for m, _ in cereri))
+
+
 class Actualizare(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
