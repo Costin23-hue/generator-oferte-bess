@@ -152,6 +152,25 @@ class TrafoAux(unittest.TestCase):
         self.assertEqual(o["kva_trafo"], 80)
         self.assertEqual(o["trafo"]["kva"], 450)
 
+    def test_un_trafo_mare_in_loc_de_mai_multe_mici(self):
+        variante = g.variante_trafo(self.date["aux"])           # 450 kVA = 12.000 $, 1250 kVA = 25.000 $
+        ales = g.alege_trafo(variante, 1100)
+        self.assertEqual((ales["kva"], ales["cant"]), (1250, 1))  # nu 3 x 450 (36.000 $... sau mai ieftin)
+        ales = g.alege_trafo(variante, 1800)
+        self.assertEqual((ales["kva"], ales["cant"]), (1250, 2))  # nu 4 x 450
+        ales = g.alege_trafo(variante, 300)
+        self.assertEqual((ales["kva"], ales["cant"]), (450, 1))   # la o bucată: cel mai ieftin care acoperă
+
+    def test_trafo_cel_mai_ieftin_daca_setarea_e_nu(self):
+        vechi = g.TRAFO_CAT_MAI_PUTINE
+        g.TRAFO_CAT_MAI_PUTINE = False
+        try:
+            self.date["aux"].loc[:, "Price USD DAP"] = [5000, 25000]
+            ales = g.alege_trafo(g.variante_trafo(self.date["aux"]), 1100)
+            self.assertEqual((ales["kva"], ales["cant"]), (450, 3))   # 15.000 $ < 25.000 $
+        finally:
+            g.TRAFO_CAT_MAI_PUTINE = vechi
+
     def test_trafo_fortat_chiar_daca_skidul_acopera(self):
         o = self.skid("Sinexcel", trafo=True)
         self.assertEqual(o["kva_trafo"], 300)

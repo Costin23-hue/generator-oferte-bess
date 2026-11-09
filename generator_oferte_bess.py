@@ -172,6 +172,9 @@ COLOANA_AUX_PCS = "Aux trafo kVA"
 # (ex. '1250 KVA Aux transformer', '450kVA 690V/400V ... TRAFO'); prețul: DAP dacă există, altfel EXW.
 # TRAFO_FILTRU = text obligatoriu în 'Detail' ("" = toate rândurile).
 TRAFO_FILTRU = ""
+# Alegerea trafo-ului extern: True = cât mai puține bucăți (ex. 1 x 1250 kVA, nu 4 x 450 kVA), iar la același număr
+# de bucăți cel mai ieftin; False = combinația cea mai ieftină, indiferent de numărul de bucăți.
+TRAFO_CAT_MAI_PUTINE = True
 
 ORE_MIN, ORE_MAX = 0.5, 8                # raport MWh/MW considerat normal
 ADAOS_IMPLICIT, CURS_IMPLICIT = 1.10, 0.89   # valorile puse în fereastră la pornire
@@ -271,6 +274,7 @@ SETARI_EDITABILE = [
     ("PCS_PE_BATERIE", "Câte PCS poate alimenta o baterie (ex. 1, 2)", "lista_intregi"),
     ("KVA_CONSUM_SKID", "Consum aux propriu / skid (până la MW = kVA)", "trepte"),
     ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),
+    ("TRAFO_CAT_MAI_PUTINE", "Trafo aux: cât mai puține bucăți (DA) sau cel mai ieftin (NU)", "da_nu"),
     ("POC_IMPLICIT_KV", "POC România (kV) = foaia 'MV SKID'", "numar"),
     ("BRANDURI_DOAR_POC_IMPLICIT", "Branduri de skid doar la POC România", "lista"),
     ("PUTERE_NOMINALA_SKID", "Branduri cu puterea din coloana 'Skid power'", "lista"),
@@ -356,6 +360,8 @@ def _nr_text(x):
 
 def valoare_setare_text(valoare, tip):
     """Valoarea din cod, cum se scrie în Setari generator.xlsx."""
+    if tip == "da_nu":
+        return "DA" if valoare else "NU"
     if tip in ("numar", "intreg"):
         return float(valoare) if tip == "numar" else int(valoare)
     if tip == "text":
@@ -390,6 +396,12 @@ def citeste_valoare_setare(valoare, tip):
         text = str(valoare).strip()
         if tip == "text":
             return text
+        if tip == "da_nu":
+            if text.upper() in ("DA", "YES", "TRUE", "1", "ADEVARAT"):
+                return True
+            if text.upper() in ("NU", "NO", "FALSE", "0", "FALS"):
+                return False
+            raise ValueError
         bucati = [b.strip() for b in re.split(r"[;,]" if tip.startswith("lista") else r";", text) if b.strip()]
         if tip == "lista":
             return tuple(bucati)
@@ -413,7 +425,7 @@ def citeste_valoare_setare(valoare, tip):
         return dict(perechi)
     except (ValueError, TypeError) as e:
         detaliu = f" ({e})" if isinstance(e, _FormatSetare) else ""
-        formate = {"numar": "un număr (ex. 1,1)", "intreg": "un număr întreg", "lista": "texte separate prin virgulă",
+        formate = {"da_nu": "DA sau NU", "numar": "un număr (ex. 1,1)", "intreg": "un număr întreg", "lista": "texte separate prin virgulă",
                    "lista_intregi": "numere întregi separate prin virgulă (ex. 1, 2)",
                    "perechi": "perechi 'nume = număr' separate prin ; (ex. REPT = 4)",
                    "perechi_text": "perechi 'nume = text' separate prin ; (ex. TBEA = rack; Kehua = dc)",
@@ -491,7 +503,7 @@ def scrie_setari_generator(cale):
     sh = wb.active
     sh.title = FOAIE_REGULI
     sh.append(["Cheie (nu se modifică)", "Setare", "Valoare", "Format"])
-    formate = {"numar": "număr", "intreg": "număr întreg", "text": "text", "lista": "texte separate prin virgulă",
+    formate = {"da_nu": "DA / NU", "numar": "număr", "intreg": "număr întreg", "text": "text", "lista": "texte separate prin virgulă",
                "lista_intregi": "numere separate prin virgulă", "perechi": "nume = număr; nume = număr",
                "perechi_text": "nume = rack/dc; ...", "praguri": "de la MWh = kVA; ...",
                "trepte": "până la MW = kVA; ..."}
@@ -1368,14 +1380,18 @@ def variante_trafo(df_aux):
 
 
 def alege_trafo(variante, kva_necesar):
-    """Cel mai ieftin trafo extern pentru kva_necesar: bucăți = kVA / putere (rotunjit în sus), cost = bucăți x preț.
+    """Trafo-ul extern pentru kva_necesar: bucăți = kVA / putere (rotunjit în sus), cost = bucăți x preț.
+    Implicit cât mai puține bucăți, apoi cel mai ieftin (TRAFO_CAT_MAI_PUTINE).
     None dacă nu e nevoie de trafo (sau nu există niciunul în Pricing)."""
     if kva_necesar <= 0 or not variante:
         return None
     optiuni = [dict(v, cant=math.ceil(kva_necesar / v["kva"])) for v in variante]
     for o in optiuni:
         o["cost"] = o["cant"] * o["pret"]
-    optiuni.sort(key=lambda v: (v["cost"], v["cant"]))   # la cost egal: mai puține bucăți
+    if TRAFO_CAT_MAI_PUTINE:
+        optiuni.sort(key=lambda v: (v["cant"], v["cost"]))   # cât mai puține trafo-uri, apoi cel mai ieftin
+    else:
+        optiuni.sort(key=lambda v: (v["cost"], v["cant"]))   # cel mai ieftin; la cost egal, mai puține bucăți
     ales = dict(optiuni[0])
     ales.update(kva_total=kva_necesar, variante=optiuni)
     return ales
