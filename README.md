@@ -81,3 +81,18 @@ O cerere cu `"tip": "previzualizare"` nu generează fișiere: răspunsul conțin
 compatibile (`optiuni`), din care colegul alege unul în Power Apps; cererea de generare trimite apoi `"skid"`.
 `Cereri/Liste.xlsx` conține tabelele `TabelBaterii`, `TabelBranduri`, `TabelPOC` pentru meniurile din Power Apps.
 Jurnal: `Cereri/motor_log.txt`.
+
+
+## Mac (și orice calculator fără Excel / PowerPoint)
+
+Programul poate face Excelul de calcul prin **Excel Online** și PDF-ul prin **conversia din Drive** (Microsoft 365),
+așa că nu are nevoie de Excel / PowerPoint instalate. Pe Mac modul acesta e automat; pe Windows e bifa
+„Calcul Excel și PDF prin Microsoft 365”.
+
+Instalare pe Mac (o singură dată):
+1. Python 3.14 de pe https://www.python.org/downloads/ (instalatorul .pkg).
+2. În Terminal:
+   `curl -fsSL https://raw.githubusercontent.com/Costin23-hue/generator-oferte-bess/main/instalare_mac.sh | bash`
+3. Dublu-click pe „Generator Oferte BESS” de pe Desktop; prima dată se face logarea Microsoft în browser.
+
+Actualizările vin singure (butonul verde din program).

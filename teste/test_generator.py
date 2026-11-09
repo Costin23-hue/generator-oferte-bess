@@ -318,6 +318,104 @@ class FoiInSetari(unittest.TestCase):
         self.assertTrue(df.isna().iloc[2]["PCS power"])      # formulă necunoscută -> gol, fără eroare
 
 
+class Microsoft365(unittest.TestCase):
+    """Calculul prin Excel Online și PDF-ul prin Drive (fără Excel / PowerPoint instalate), cu Drive simulat."""
+
+    def setUp(self):
+        import json
+        self.json = json
+        self.cereri = []
+        self.batch_esuat = 0
+        d = g.DriveCloud.__new__(g.DriveCloud)
+        d.ofertare = ("D", "ROOT")
+        d._cerere = self.cerere
+        self.drive = d
+
+    def cerere(self, metoda, cale, date=None, tip=None, brut=False, **k):
+        corp = self.json.loads(date) if date else None
+        self.cereri.append((metoda, cale, corp))
+        if cale == "/$batch":
+            stare = 503 if self.batch_esuat else 200
+            self.batch_esuat = max(0, self.batch_esuat - 1)
+            return {"responses": [{"id": r["id"], "status": stare} for r in corp["requests"]]}
+        if "usedRange" in cale:
+            return {"address": "Sheet1!A10:B11", "formulas": [["Commisioning Sinexcel", "=A1"], ["x", ""]]}
+        if "range(address='A4:I14')" in cale:
+            return {"values": [["Product", "", "", "", "", "", "", "", ""]] * 11}
+        if "range(address=" in cale:
+            return {"values": [[100.0]]}
+        if cale.endswith("format=pdf"):
+            return b"%PDF-1.7 test"
+        return {}
+
+    def scrieri(self):
+        return [r for c in self.cereri if c[1] == "/$batch" for r in c[2]["requests"]]
+
+    def oferta(self):
+        date = date_test()
+        p = g.pregateste_oferta(date, g.lista_baterii(date["bat"]), intrari_test(), JINKO_2H, "DDP", "Oricare",
+                                None, None)
+        return p, p["lista"][0]
+
+    def test_completare_prin_excel_online(self):
+        from datetime import datetime
+        p, o = self.oferta()
+        rez = g.completeaza_calcul(g.FoaieGraph(self.drive, ("D", "F")), dict(intrari_test(), versiune=1),
+                                   p["baterie"], p["nr_baterii"], o, o["trafo"], datetime(2026, 11, 9, 14, 0),
+                                   ["Jinko"], ["Kehua", "Sinexcel"])
+        self.assertEqual(rez["pret_ddp"], 100.0)
+        scrieri = {r["url"].split("address='")[1].split("'")[0]: r["body"] for r in self.scrieri()}
+        self.assertEqual(scrieri["A5:D5"]["values"], [[JINKO_2H, 5.015, 4, 85000.0]])
+        self.assertEqual(scrieri["G12"], {"formulas": [["=8000.0*C6"]]})
+        self.assertAlmostEqual(scrieri["D1:E3"]["values"][0][1], 46335.5833, places=3)   # data ca număr Excel
+        self.assertEqual(scrieri["A10"]["values"], [["Commisioning Kehua"]])           # brandul skidului ales
+        self.assertTrue(all(len(c[2]["requests"]) <= 20 for c in self.cereri if c[1] == "/$batch"))
+        self.assertIn(("POST", "/drives/D/items/F/workbook/application/calculate"),
+                      [c[:2] for c in self.cereri])
+
+    def test_scrierile_merg_in_ordine(self):
+        foaie = g.FoaieGraph(self.drive, ("D", "F"))
+        for i in range(25):
+            foaie.scrie(f"A{i + 1}", i)
+        foaie.trimite()
+        loturi = [c[2]["requests"] for c in self.cereri if c[1] == "/$batch"]
+        self.assertEqual([len(x) for x in loturi], [20, 5])
+        self.assertEqual(loturi[0][5]["dependsOn"], ["5"])
+
+    def test_fisier_ocupat_se_reincearca(self):
+        g_sleep = g.time.sleep
+        g.time.sleep = lambda s: None
+        try:
+            self.batch_esuat = 2                       # primele două încercări: 503 (fișier ocupat)
+            foaie = g.FoaieGraph(self.drive, ("D", "F"))
+            foaie.scrie("A1", 1)
+            foaie.trimite()
+        finally:
+            g.time.sleep = g_sleep
+        self.assertEqual(sum(c[1] == "/$batch" for c in self.cereri), 3)
+
+    def test_golire_celula(self):
+        foaie = g.FoaieGraph(self.drive, ("D", "F"))
+        foaie.scrie("B7", None)
+        foaie.trimite()
+        self.assertEqual(self.scrieri()[0]["body"], {"values": [[""]]})
+
+    def test_pdf_prin_drive(self):
+        vechi = g.DRIVE
+        g.DRIVE = self.drive
+        self.drive.folder_oferta = lambda folder: "FOLDER"
+        self.drive.urca_fisier = lambda id_folder, nume, cale: ("D", "PPTX")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                pdf = os.path.join(tmp, "o.pdf")
+                g.pptx_in_pdf_online(os.path.join(tmp, "o.pptx"), pdf, tmp)
+                with open(pdf, "rb") as f:
+                    self.assertEqual(f.read(), b"%PDF-1.7 test")
+        finally:
+            g.DRIVE = vechi
+        self.assertEqual(self.cereri[-1][1], "/drives/D/items/PPTX/content?format=pdf")
+
+
 class Actualizare(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

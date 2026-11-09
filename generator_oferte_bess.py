@@ -21,7 +21,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from tkinter import ttk, messagebox, filedialog
 
 import pandas as pd
-import xlwings as xw
+try:                                    # Excel instalat (Windows / Mac); fără el se lucrează prin Microsoft 365
+    import xlwings as xw
+except ImportError:
+    xw = None
 from pptx import Presentation
 
 # ======================================================================
@@ -1413,27 +1416,121 @@ def valideaza(intrari):
 # ======================================================================
 # EXCEL
 # ======================================================================
-def inlocuieste_branduri(sh, branduri, brand_ales):
+class FoaieXlwings:
+    """Foaia de calcul deschisă în Excel instalat (xlwings)."""
+    def __init__(self, sh):
+        self.sh = sh
+
+    def scrie(self, adresa, valoare):
+        self.sh.range(adresa).value = valoare
+
+    def format_numar(self, adresa, fmt):
+        self.sh.range(adresa).number_format = fmt
+
+    def ingroasa(self, adresa):
+        self.sh.range(adresa).font.bold = True
+
+    def formule(self):
+        """(rândul și coloana de start 1-based, formulele zonei folosite ca listă de rânduri)."""
+        zona = self.sh.used_range
+        formule = zona.formula
+        if not isinstance(formule, (list, tuple)):
+            formule = ((formule,),)
+        elif formule and not isinstance(formule[0], (list, tuple)):
+            formule = (formule,)
+        return zona.row, zona.column, [list(r) for r in formule]
+
+    def citeste(self, adresa):
+        return self.sh.range(adresa).value
+
+    def calculeaza(self):
+        self.sh.book.app.calculate()
+
+
+def inlocuieste_branduri_foaie(foaie, branduri, brand_ales):
     """În celulele cu text (nu formule) din foaie, înlocuiește orice brand din listă cu brandul ales.
     Ex.: 'Commissioning Sinexcel' -> 'Commissioning Kehua'."""
     branduri = [b for b in branduri if b and b.strip().lower() != brand_ales.strip().lower()]
     if not branduri or not brand_ales:
         return
     model = re.compile("|".join(re.escape(b.strip()) for b in sorted(branduri, key=len, reverse=True)), re.I)
-    zona = sh.used_range
-    formule = zona.formula
-    if not isinstance(formule, (list, tuple)):
-        formule = ((formule,),)
-    elif formule and not isinstance(formule[0], (list, tuple)):
-        formule = (formule,)
+    rand0, col0, formule = foaie.formule()
     for i, rand in enumerate(formule):
         for j, val in enumerate(rand):
             if isinstance(val, str) and val and not val.startswith("=") and model.search(val):
-                zona[i, j].value = model.sub(brand_ales.strip(), val)
+                foaie.scrie(f"{litera_coloana(col0 - 1 + j)}{rand0 + i}", model.sub(brand_ales.strip(), val))
+
+
+def completeaza_calcul(foaie, intrari, baterie, nr_baterii, skid, trafo, acum, branduri_bat=(), branduri_skid=()):
+    """Completează template-ul de calcul (aceleași celule, indiferent dacă e Excel instalat sau Excel Online)."""
+    # Antet: client, proiect, nr. proiect, data și ora calculului
+    foaie.scrie("A1:B2", [["Client", intrari["client"]], ["Nume Proiect", intrari["proiect"]]])
+    foaie.scrie("D1:E3", [["Data și ora", acum], ["Nr. proiect", intrari["nr_proiect"]],
+                          ["Versiune", f"v{intrari['versiune']}"]])
+    foaie.format_numar("E1", "dd.mm.yyyy hh:mm:ss")
+    foaie.ingroasa("A1:A2")
+    foaie.ingroasa("D1:D3")
+
+    foaie.scrie("A5:D5", [[baterie["tip"], baterie["cap"], nr_baterii, baterie["pret"]]])
+    foaie.scrie("F5", baterie["transport"])
+
+    foaie.scrie("A6:D6", [[skid["tip"], skid["putere_unit"], skid["nr"], skid["pret_unit"]]])   # B8 = B6 x C6
+    foaie.scrie("F6", skid["transport"])
+    foaie.scrie("G12", f"={skid['com']}*C6")
+
+    # Trafo auxiliar extern: nr. bucăți (C7 = B21) îl calculează Excelul, în blocul 'CALCUL TRAFO AUXILIAR'.
+    # B19 = kVA de acoperit cu trafo extern (necesar baterii + skiduri minus trafo-ul aux din skid).
+    foaie.scrie("A7", trafo["nume"] if trafo else "aux trafo")
+    # B20 = puterea unui trafo; B7 = puterea totală = putere unit x nr. trafo (C7 = B21, calculat de Excel)
+    foaie.scrie("B20", trafo["kva"] if trafo else None)
+    foaie.scrie("B7", "=B20*C7" if trafo else None)
+    foaie.scrie("D7", trafo["pret"] if trafo else 0)
+    foaie.scrie("B17:B18", [[1 if trafo else 0], [baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])]])
+    foaie.scrie("A19:B19", [["kVA de acoperit cu trafo extern", skid.get("kva_trafo", 0)]])
+    foaie.scrie("D17:E20", [["Necesar aux total (kVA)", skid.get("kva_necesar", 0)],
+                            ["  din care consum skiduri (kVA)", skid["nr"] * skid.get("kva_skid", 0)],
+                            ["Acoperit de trafo aux din skid (kVA)", skid.get("kva_acoperit", 0)],
+                            ["Trafo aux inclus / skid (kVA)", skid.get("aux_skid", 0)]])
+    foaie.scrie(f"A24:B{23 + len(KVA_AUX_PER_BATERIE)}", [[prag, kva] for prag, kva in KVA_AUX_PER_BATERIE])
+
+    foaie.scrie("E9:E10", [[intrari["ems"]], [intrari["eng"]]])
+    foaie.scrie("H3:I3", [[intrari["adaos"], intrari["curs"]]])
+
+    # Etichetele din template (ex. 'Commissioning Sinexcel') primesc brandurile alese
+    inlocuieste_branduri_foaie(foaie, branduri_skid, skid["brand"])
+    inlocuieste_branduri_foaie(foaie, branduri_bat, baterie["brand"])
+
+    # Componente manuale: extra warranty = % din totalul cu transport + commissioning (K9 / K11 = $/MWh)
+    for comp, celula_pct, eticheta, total in ((baterie, "K6", f"Battery {baterie['brand']}", "(G5+G11)"),
+                                              (skid, "K10", f"PCS {skid['brand']}", "(G6+G12)")):
+        if comp.get("manual"):
+            pct = comp.get("ext_gar_pct") or 0
+            foaie.scrie("J" + celula_pct[1:], f"{eticheta} {pct:g}%" if pct else "fără extra warranty")
+            foaie.scrie(celula_pct, f"={total}*{pct / 100:g}" if pct else "=0")
+
+    foaie.calculeaza()
+    return {
+        "pret_ddp": foaie.citeste("H13") or 0,
+        "pret_mwh": foaie.citeste("H14") or 0,
+        "ems_yearly": foaie.citeste("K5") or 0,
+        "cost": foaie.citeste("G13") or 0,                      # valoarea de achiziție (pentru tabelul Moldova)
+        "ext_gar_bat": foaie.citeste(CELULA_EXT_GAR_BAT) or 0,
+        "ext_gar_pcs": foaie.citeste(CELULA_EXT_GAR_PCS) or 0,
+        "nr_trafo": foaie.citeste("C7") or 0,
+    }
+
+
+def nume_calcul(intrari, acum):
+    return "Calcul_{}_{}_{}_v{}_{}.xlsx".format(
+        *(nume_fisier_valid(x) for x in (intrari["nr_proiect"], intrari["client"], intrari["proiect"])),
+        intrari["versiune"], acum.strftime("%Y-%m-%d_%H.%M.%S"))
 
 
 def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat=(), branduri_skid=()):
     """Completează template-ul, recalculează, salvează calculul într-un fișier nou. Returnează rezultatele."""
+    if xw is None:
+        raise RuntimeError("Excel nu e instalat (sau lipsește biblioteca xlwings): bifează „Calcul și PDF prin "
+                           "Microsoft 365”.")
     app_xl = None
     wb = None
     try:
@@ -1442,76 +1539,12 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
         wb = app_xl.books.open(os.path.abspath(FISIER_EXCEL_TEMPLATE))
         sh = wb.sheets["Sheet1"]
 
-        # Antet: client, proiect, nr. proiect, data și ora calculului
         acum = datetime.now()
-        sh.range("A1:B2").value = [["Client", intrari["client"]], ["Nume Proiect", intrari["proiect"]]]
-        sh.range("D1:E3").value = [["Data și ora", acum], ["Nr. proiect", intrari["nr_proiect"]],
-                                   ["Versiune", f"v{intrari['versiune']}"]]
-        sh.range("E1").number_format = "dd.mm.yyyy hh:mm:ss"
-        sh.range("A1:A2").font.bold = True
-        sh.range("D1:D3").font.bold = True
-
-        sh.range("A5").value = baterie["tip"]
-        sh.range("B5").value = baterie["cap"]
-        sh.range("C5").value = nr_baterii
-        sh.range("D5").value = baterie["pret"]
-        sh.range("F5").value = baterie["transport"]
-
-        sh.range("A6").value = skid["tip"]
-        sh.range("B6").value = skid["putere_unit"]               # puterea unui skid (MW); B8 = B6 x C6
-        sh.range("C6").value = skid["nr"]
-        sh.range("D6").value = skid["pret_unit"]
-        sh.range("F6").value = skid["transport"]
-        sh.range("G12").formula = f"={skid['com']}*C6"
-
-        # Trafo auxiliar extern: nr. bucăți (C7 = B21) îl calculează Excelul, în blocul 'CALCUL TRAFO AUXILIAR'.
-        # B19 = kVA de acoperit cu trafo extern (necesar baterii + skiduri minus trafo-ul aux din skid).
-        sh.range("A7").value = trafo["nume"] if trafo else "aux trafo"
-        # B20 = puterea unui trafo; B7 = puterea totală = putere unit x nr. trafo (C7 = B21, calculat de Excel)
-        sh.range("B20").value = trafo["kva"] if trafo else None
-        sh.range("B7").formula = "=B20*C7" if trafo else ""
-        sh.range("D7").value = trafo["pret"] if trafo else 0
-        sh.range("B17").value = 1 if trafo else 0
-        sh.range("B18").value = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
-        sh.range("A19:B19").value = [["kVA de acoperit cu trafo extern", skid.get("kva_trafo", 0)]]
-        sh.range("D17:E20").value = [["Necesar aux total (kVA)", skid.get("kva_necesar", 0)],
-                                     ["  din care consum skiduri (kVA)", skid["nr"] * skid.get("kva_skid", 0)],
-                                     ["Acoperit de trafo aux din skid (kVA)", skid.get("kva_acoperit", 0)],
-                                     ["Trafo aux inclus / skid (kVA)", skid.get("aux_skid", 0)]]
-        sh.range("A24").value = [[prag, kva] for prag, kva in KVA_AUX_PER_BATERIE]
-
-        sh.range("E9").value = intrari["ems"]
-        sh.range("E10").value = intrari["eng"]
-        sh.range("H3").value = intrari["adaos"]
-        sh.range("I3").value = intrari["curs"]
-
-        # Etichetele din template (ex. 'Commissioning Sinexcel') primesc brandurile alese
-        inlocuieste_branduri(sh, branduri_skid, skid["brand"])
-        inlocuieste_branduri(sh, branduri_bat, baterie["brand"])
-
-        # Componente manuale: extra warranty = % din totalul cu transport + commissioning (K9 / K11 = $/MWh)
-        for comp, celula_pct, eticheta, total in ((baterie, "K6", f"Battery {baterie['brand']}", "(G5+G11)"),
-                                                  (skid, "K10", f"PCS {skid['brand']}", "(G6+G12)")):
-            if comp.get("manual"):
-                pct = comp.get("ext_gar_pct") or 0
-                sh.range(celula_pct).offset(0, -1).value = f"{eticheta} {pct:g}%" if pct else "fără extra warranty"
-                sh.range(celula_pct).formula = f"={total}*{pct / 100:g}" if pct else "=0"
-
-        app_xl.calculate()
-        rezultat = {
-            "pret_ddp": sh.range("H13").value or 0,
-            "pret_mwh": sh.range("H14").value or 0,
-            "ems_yearly": sh.range("K5").value or 0,
-            "cost": sh.range("G13").value or 0,                  # valoarea de achiziție (pentru tabelul Moldova)
-            "ext_gar_bat": sh.range(CELULA_EXT_GAR_BAT).value or 0,
-            "ext_gar_pcs": sh.range(CELULA_EXT_GAR_PCS).value or 0,
-            "nr_trafo": sh.range("C7").value or 0,
-        }
+        rezultat = completeaza_calcul(FoaieXlwings(sh), intrari, baterie, nr_baterii, skid, trafo, acum,
+                                      branduri_bat, branduri_skid)
 
         # Fiecare calcul = un fișier Excel separat, cu data și ora în nume (nu se suprascrie nimic)
-        cale = os.path.abspath(os.path.join(folder, "Calcul_{}_{}_{}_v{}_{}.xlsx".format(
-            *(nume_fisier_valid(x) for x in (intrari["nr_proiect"], intrari["client"], intrari["proiect"])),
-            intrari["versiune"], acum.strftime("%Y-%m-%d_%H.%M.%S"))))
+        cale = os.path.abspath(os.path.join(folder, nume_calcul(intrari, acum)))
         wb.save(cale)
         rezultat["cale_excel"] = cale
         return rezultat
@@ -1526,6 +1559,91 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
                 app_xl.quit()
         except Exception:
             pass
+
+
+# ---------------- același calcul, prin Excel Online (Microsoft 365) ----------------
+def _valoare_excel(v):
+    """Valoare pentru Excel Online: datetime -> număr de serie Excel, None -> '' (golește celula)."""
+    if isinstance(v, datetime):
+        return (v - datetime(1899, 12, 30)).total_seconds() / 86400
+    return "" if v is None else v
+
+
+class FoaieGraph:
+    """Foaia de calcul dintr-un fișier din Drive, completată și calculată de Excel Online (fără Excel instalat).
+    Scrierile se adună și se trimit grupat (Graph $batch, câte 20, una după alta)."""
+    def __init__(self, drive, fisier, nume_foaie="Sheet1"):
+        self.drive, self.fisier, self.nume_foaie = drive, fisier, nume_foaie
+        self.url = drive._url_foaie(fisier, nume_foaie)
+        self.de_trimis = []
+
+    def _range(self, adresa):
+        return f"{self.url}/range(address='{adresa}')"
+
+    def scrie(self, adresa, valoare):
+        randuri = valoare if isinstance(valoare, list) else [[valoare]]
+        randuri = [[_valoare_excel(v) for v in r] for r in randuri]
+        cheie = "formulas" if any(isinstance(v, str) and v.startswith("=") for r in randuri for v in r) else "values"
+        self.de_trimis.append(("PATCH", self._range(adresa), {cheie: randuri}))
+
+    def format_numar(self, adresa, fmt):
+        self.de_trimis.append(("PATCH", self._range(adresa), {"numberFormat": [[fmt]]}))
+
+    def ingroasa(self, adresa):
+        self.de_trimis.append(("PATCH", self._range(adresa) + "/format/font", {"bold": True}))
+
+    def trimite(self):
+        while self.de_trimis:
+            grup, self.de_trimis = self.de_trimis[:20], self.de_trimis[20:]
+            self.drive.batch(grup)
+
+    def formule(self):
+        self.trimite()
+        j = self.drive.cerere_excel("GET", f"{self.url}/usedRange?$select=address,formulas")
+        m = re.search(r"!?\$?([A-Z]+)\$?(\d+)", j["address"].split("!")[-1])
+        return int(m.group(2)), _index_coloana(m.group(1)), j["formulas"]
+
+    def calculeaza(self):
+        self.trimite()
+        self.drive.cerere_excel("POST", self.url.rsplit("/worksheets/", 1)[0] + "/application/calculate",
+                                {"calculationType": "Full"})
+
+    def citeste(self, adresa):
+        self.trimite()
+        v = self.drive.cerere_excel("GET", self._range(adresa) + "?$select=values")["values"]
+        valoare = v[0][0] if len(v) == 1 and len(v[0]) == 1 else v
+        return None if valoare == "" else valoare
+
+
+def calculeaza_in_excel_online(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat=(), branduri_skid=()):
+    """Ca calculeaza_in_excel, dar fără Excel instalat: template-ul se copiază în Drive, în folderul ofertei
+    ('Oferte generate/<zi>/<nume>/Calcul_....xlsx'), Excel Online îl completează și îl calculează, iar o copie se
+    descarcă local. Excelul din Drive e cel 'oficial' (îl poți deschide în browser și modifica)."""
+    if DRIVE is None:
+        raise RuntimeError("Calculul prin Microsoft 365 merge doar cu Drive-ul conectat.")
+    acum = datetime.now()
+    nume = nume_calcul(intrari, acum)
+    id_folder = DRIVE.folder_oferta(folder)
+    fisier = DRIVE.urca_fisier(id_folder, nume, FISIER_EXCEL_TEMPLATE)
+    rezultat = completeaza_calcul(FoaieGraph(DRIVE, fisier), intrari, baterie, nr_baterii, skid, trafo, acum,
+                                  branduri_bat, branduri_skid)
+    cale = os.path.abspath(os.path.join(folder, nume))
+    try:
+        DRIVE._descarca(fisier[0], fisier[1], cale)
+    except Exception:
+        pass                                              # copia locală e doar pentru arhivă; contează cea din Drive
+    rezultat.update(cale_excel=cale, excel_drive=fisier, folder_drive=(fisier[0], id_folder),
+                    link_excel=DRIVE.link(fisier))
+    return rezultat
+
+
+def pptx_in_pdf_online(cale_pptx, cale_pdf, folder):
+    """PDF-ul făcut de Microsoft 365: prezentarea se urcă în folderul ofertei din Drive și se descarcă ca PDF."""
+    id_folder = DRIVE.folder_oferta(folder)
+    fisier = DRIVE.urca_fisier(id_folder, os.path.basename(cale_pptx), cale_pptx)
+    continut = DRIVE.cerere_excel("GET", f"/drives/{fisier[0]}/items/{fisier[1]}/content?format=pdf", brut=True)
+    with open(cale_pdf, "wb") as f:
+        f.write(continut)
 
 
 # ======================================================================
@@ -2031,7 +2149,58 @@ class DriveCloud:
             mutate += 1
         return mutate
 
-    def urca_oferta(self, folder_local):
+    def folder_oferta(self, folder_local):
+        """ID-ul folderului ofertei din Drive ('Oferte generate/<zi>/<nume>'), creat dacă nu există."""
+        drive_id, item_id = self.ofertare
+        id_oferte = self._asigura_folder(drive_id, item_id, FOLDER_OFERTE)
+        zi = os.path.basename(os.path.dirname(os.path.abspath(folder_local)))
+        if MODEL_FOLDER_ZI.match(zi):
+            id_oferte = self._asigura_folder(drive_id, id_oferte, zi)
+        return self._asigura_folder(drive_id, id_oferte, os.path.basename(folder_local))
+
+    def urca_fisier(self, id_folder, nume, cale_locala):
+        """Urcă un fișier în folderul dat; returnează (drive_id, item_id)."""
+        drive_id = self.ofertare[0]
+        self._urca(drive_id, id_folder, nume, cale_locala)
+        j = self._cerere("GET", f"/drives/{drive_id}/items/{id_folder}:/{_cale_url(nume)}")
+        return drive_id, j["id"]
+
+    def link(self, fisier):
+        return self._cerere("GET", f"/drives/{fisier[0]}/items/{fisier[1]}?$select=webUrl").get("webUrl")
+
+    def sterge(self, element):
+        self._cerere("DELETE", f"/drives/{element[0]}/items/{element[1]}")
+
+    def cerere_excel(self, metoda, cale, corp=None, brut=False, incercari=6):
+        """Cerere Graph cu reîncercare: un fișier abia urcat poate fi 'ocupat' câteva secunde pentru Excel Online."""
+        for i in range(incercari):
+            try:
+                return self._cerere(metoda, cale, date=json.dumps(corp).encode() if corp is not None else None,
+                                    tip="application/json" if corp is not None else None, brut=brut)
+            except EroareDrive as e:
+                if i == incercari - 1 or not re.search(r"\((409|423|429|500|502|503|504)\)", str(e)):
+                    raise
+                time.sleep(2 * (i + 1))
+
+    def batch(self, cereri):
+        """Mai multe cereri Graph într-una ($batch), executate în ordine (fiecare depinde de cea dinainte)."""
+        corp = {"requests": [dict({"id": str(i + 1), "method": m, "url": url, "body": b,
+                                   "headers": {"Content-Type": "application/json"}},
+                                  **({"dependsOn": [str(i)]} if i else {}))
+                             for i, (m, url, b) in enumerate(cereri)]}
+        for incercare in range(5):
+            raspuns = self.cerere_excel("POST", "/$batch", corp)
+            erori = [r for r in raspuns.get("responses", []) if r.get("status", 200) >= 300]
+            temporare = [r for r in erori if r.get("status") in (409, 423, 429, 500, 502, 503, 504, 424)]
+            if not erori or len(temporare) < len(erori) or incercare == 4:
+                break
+            time.sleep(2 * (incercare + 1))                  # fișier ocupat: reîncercăm tot grupul
+        if erori:
+            r = sorted(erori, key=lambda x: int(x["id"]))[0]
+            mesaj = (r.get("body") or {}).get("error", {}).get("message", "")
+            raise EroareDrive(f"Excel Online ({r.get('status')}): {mesaj or 'cerere refuzată'}")
+
+    def urca_oferta(self, folder_local, sari=()):
         """Urcă fișierele ofertei în 'Ofertare BESS/Oferte generate/<nume>'. Returnează linkul folderului."""
         drive_id, item_id = self.ofertare
         id_oferte = self._asigura_folder(drive_id, item_id, FOLDER_OFERTE)
@@ -2041,7 +2210,7 @@ class DriveCloud:
         id_oferta = self._asigura_folder(drive_id, id_oferte, os.path.basename(folder_local))
         for fisier in sorted(os.listdir(folder_local)):
             cale = os.path.join(folder_local, fisier)
-            if os.path.isfile(cale):
+            if os.path.isfile(cale) and fisier not in sari:
                 self._urca(drive_id, id_oferta, fisier, cale)
         return self._cerere("GET", f"/drives/{drive_id}/items/{id_oferta}").get("webUrl")
 
@@ -2499,7 +2668,8 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
 
 def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=()):
     """Calculul în Excel + prezentarea PPTX + PDF, dintr-o dată (modul motor). Returnează căile fișierelor."""
-    calcul = calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status, nume_existente)
+    calcul = calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status, nume_existente,
+                               online=xw is None and DRIVE is not None)
     return finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status, reciteste=False)
 
 
@@ -2526,7 +2696,26 @@ def citeste_rezultate_excel(cale):
     return rez
 
 
-def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=()):
+def citeste_rezultate_online(fisier):
+    """Ca citeste_rezultate_excel, dar din Excelul din Drive, prin Excel Online (vede și modificările făcute în browser)."""
+    foaie = FoaieGraph(DRIVE, fisier)
+    rez = {cheie: foaie.citeste(celula) for cheie, celula in CELULE_REZULTAT.items()}
+    if rez["pret_ddp"] is None:
+        raise ValueError("Excelul de calcul din Drive nu are prețul total (H13 e gol).")
+    rez = {k: (v if v is not None else 0) for k, v in rez.items()}
+    rez["tabel"] = [[None if v == "" else v for v in r] for r in foaie.citeste("A4:I14")]
+    return rez
+
+
+def citeste_rezultate(calcul):
+    """Rezultatele calculului: din Excel Online (mod Microsoft 365) sau din fișierul local salvat."""
+    if calcul["rez"].get("excel_drive"):
+        return citeste_rezultate_online(calcul["rez"]["excel_drive"])
+    return citeste_rezultate_excel(calcul["cale_excel"])
+
+
+def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=(),
+                      online=False):
     """Pasul 1: doar Excelul de calcul, în 'Oferte generate/<nume>_vN'. Prezentarea se face după verificare."""
     # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2
     intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"], nume_existente)
@@ -2540,12 +2729,14 @@ def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=la
     status("Calculez în Excel...")
     c_brand_bat = date["bat"].columns[BAT_COL_BRAND]
     branduri_bat = [str(x) for x in date["bat"][c_brand_bat].dropna().unique() if str(x).strip()]
-    rez = calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat, branduri_skid(date))
+    calcul_excel = calculeaza_in_excel_online if online else calculeaza_in_excel
+    rez = calcul_excel(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat, branduri_skid(date))
+    calcul = {"nume": nume, "folder": folder, "rez": rez, "cale_excel": rez["cale_excel"], "online": online}
     try:
-        rez["tabel"] = citeste_rezultate_excel(rez["cale_excel"])["tabel"]
+        rez["tabel"] = citeste_rezultate(calcul)["tabel"]
     except Exception:
         rez["tabel"] = []
-    return {"nume": nume, "folder": folder, "rez": rez, "cale_excel": rez["cale_excel"]}
+    return calcul
 
 
 def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, reciteste=True):
@@ -2553,7 +2744,7 @@ def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status
     nume, folder, rez = calcul["nume"], calcul["folder"], dict(calcul["rez"])
     if reciteste:
         status("Recitesc Excelul de calcul...")
-        rez.update(citeste_rezultate_excel(calcul["cale_excel"]))
+        rez.update(citeste_rezultate(calcul))
     status("Populez prezentarea PowerPoint...")
     inlocuiri = {
         "[DATA]": datetime.now().strftime(FORMAT_DATA),
@@ -2600,7 +2791,10 @@ def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status
     status("Salvez și varianta PDF...")
     cale_pdf, eroare_pdf = os.path.join(folder, nume + ".pdf"), None
     try:
-        pptx_in_pdf(cale_pptx, cale_pdf)
+        if calcul.get("online"):
+            pptx_in_pdf_online(cale_pptx, cale_pdf, folder)          # PDF făcut de Microsoft 365
+        else:
+            pptx_in_pdf(cale_pptx, cale_pdf)
     except Exception as e:
         cale_pdf, eroare_pdf = None, str(e)
     return {"nume": nume, "folder": folder, "cale_pptx": cale_pptx, "cale_pdf": cale_pdf,
@@ -3006,6 +3200,18 @@ class AplicatieOferte:
         ttk.Label(frame, text="Fără nicio bifă: trafo aux extern adăugat automat doar unde skidul nu acoperă consumul.",
                   foreground="gray").grid(row=r + 7, column=0, columnspan=2, sticky="w")
 
+        # Excel + PDF prin Microsoft 365 (Excel Online + conversie PDF în Drive): merge fără Excel / PowerPoint
+        # instalate (Mac). Fără Excel instalat e singura variantă; altfel se ține minte alegerea.
+        fara_office = xw is None or sys.platform != "win32"
+        self.mod_online = tk.BooleanVar(value=DRIVE is not None and
+                                        (fara_office or bool(citeste_setari().get("mod_m365"))))
+        bifa = ttk.Checkbutton(frame, text="Calcul Excel și PDF prin Microsoft 365 (fără Excel / PowerPoint instalate)",
+                               variable=self.mod_online,
+                               command=lambda: salveaza_setari(dict(citeste_setari(), mod_m365=self.mod_online.get())))
+        bifa.grid(row=r + 8, column=0, columnspan=2, pady=(10, 2), sticky="w")
+        if DRIVE is None or fara_office:
+            bifa.state(["disabled"])                  # fără Drive nu se poate; fără Office e obligatoriu
+
         self.btn = tk.Button(self._jos, text="Previzualizare și calcul în Excel", font=("Helvetica", 12, "bold"),
                              command=self.previzualizeaza, **STIL_BUTON)
         self.btn.pack(pady=(8, 4), fill="x", padx=20)
@@ -3099,7 +3305,7 @@ class AplicatieOferte:
         if not c:
             return
         try:
-            rez = citeste_rezultate_excel(c["calcul"]["cale_excel"])
+            rez = citeste_rezultate(c["calcul"])
         except Exception as e:
             messagebox.showerror("Verificare", f"Nu pot citi Excelul de calcul:\n{e}\n\n"
                                  "Dacă e deschis și modificat, salvează-l (Ctrl+S).")
@@ -3120,11 +3326,18 @@ class AplicatieOferte:
             f"adaos {i['adaos']:g}\nEMS / an: {bani_eu(rez['ems_yearly'])} $   |   extra warranty baterie: "
             f"{bani_eu(rez['ext_gar_bat'])} $/MWh/an, PCS: {bani_eu(rez['ext_gar_pcs'])} $/MWh/an"))
         self.lbl_verificare.config(foreground="black", text=(
+            "Verifică prețurile. Dacă vrei să schimbi ceva, deschide Excelul (se deschide în browser, în Excel Online, "
+            "și se salvează singur), modifică și apasă „Recitește”. La OK, PowerPoint-ul și PDF-ul iau valorile din "
+            "Excelul din Drive." if c["calcul"].get("online") else
             "Verifică prețurile. Dacă vrei să schimbi ceva, deschide Excelul, modifică, SALVEAZĂ (Ctrl+S) și apasă "
             "„Recitește”. La OK, PowerPoint-ul și PDF-ul iau valorile din Excelul salvat."))
 
     def _deschide_excel_calcul(self):
-        cale = self._calcul_in_asteptare["calcul"]["cale_excel"]
+        calcul = self._calcul_in_asteptare["calcul"]
+        if calcul["rez"].get("link_excel"):            # Excelul din Drive, în Excel Online
+            webbrowser.open(calcul["rez"]["link_excel"])
+            return
+        cale = calcul["cale_excel"]
         try:
             if sys.platform == "win32":
                 os.startfile(cale)
@@ -3139,6 +3352,11 @@ class AplicatieOferte:
                                                        "nu se urcă nimic în Drive)"):
             return
         shutil.rmtree(c["calcul"]["folder"], ignore_errors=True)    # dacă Excelul e deschis, rămâne local
+        if c["calcul"]["rez"].get("folder_drive"):                 # mod Microsoft 365: calculul e și în Drive
+            try:
+                DRIVE.sterge(c["calcul"]["rez"]["folder_drive"])
+            except Exception as e:
+                messagebox.showwarning("Renunț", f"Nu am putut șterge calculul din Drive:\n{e}")
         self._calcul_in_asteptare = None
         self._stare_verificare(False)
         self.tabel_verificare.delete(*self.tabel_verificare.get_children())
@@ -3728,6 +3946,7 @@ class AplicatieOferte:
             self.status("Anulat.", "gray")
             return
         calcul = calculeaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status,
+                                   online=self.mod_online.get(),
                                    nume_existente=DRIVE.nume_oferte() if DRIVE is not None else ())
         self._calcul_in_asteptare = {"calcul": calcul, "intrari": intrari, "baterie": baterie,
                                      "nr_baterii": nr_baterii, "skid": skid, "trafo": trafo}
@@ -3745,7 +3964,9 @@ class AplicatieOferte:
         if DRIVE is not None:
             self.status("Urc oferta în Drive...")
             try:
-                link_drive = DRIVE.urca_oferta(r["folder"])
+                # în modul Microsoft 365 Excelul de calcul e deja în Drive (poate modificat în browser): nu-l suprascriem
+                link_drive = DRIVE.urca_oferta(r["folder"], sari={os.path.basename(r["cale_excel"])}
+                                               if c["calcul"].get("online") else ())
             except Exception as e:
                 eroare_drive = str(e)
         if DRIVE is not None:
