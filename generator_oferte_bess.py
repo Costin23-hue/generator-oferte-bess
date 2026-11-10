@@ -1492,10 +1492,15 @@ def completeaza_calcul(foaie, intrari, baterie, nr_baterii, skid, trafo, acum, b
     foaie.ingroasa("A1:A2")
     foaie.ingroasa("D1:D3")
 
-    foaie.scrie("A5:D5", [[baterie["tip"], baterie["cap"], nr_baterii, baterie["pret"]]])
+    # rezerva de preț apare ca formulă (preț de bază x (1 + %)), ca să se vadă în Excel
+    pret_bat = (f"={baterie['pret_baza']}*(1+{baterie['rezerva_pct']:g}%)" if baterie.get("rezerva_pct")
+                else baterie["pret"])
+    pret_skid = (f"={skid['pret_unit_baza']}*(1+{skid['rezerva_pct']:g}%)" if skid.get("rezerva_pct")
+                 else skid["pret_unit"])
+    foaie.scrie("A5:D5", [[baterie["tip"], baterie["cap"], nr_baterii, pret_bat]])
     foaie.scrie("F5", baterie["transport"])
 
-    foaie.scrie("A6:D6", [[skid["tip"], skid["putere_unit"], skid["nr"], skid["pret_unit"]]])   # B8 = B6 x C6
+    foaie.scrie("A6:D6", [[skid["tip"], skid["putere_unit"], skid["nr"], pret_skid]])   # B8 = B6 x C6
     foaie.scrie("F6", skid["transport"])
     foaie.scrie("G12", f"={skid['com']}*C6")
 
@@ -1516,6 +1521,9 @@ def completeaza_calcul(foaie, intrari, baterie, nr_baterii, skid, trafo, acum, b
 
     foaie.scrie("E9:E10", [[intrari["ems"]], [intrari["eng"]]])
     foaie.scrie("H3:I3", [[intrari["adaos"], intrari["curs"]]])
+    rezerve = [f"{n} +{c['rezerva_pct']:g}%" for n, c in (("baterie", baterie), ("skid", skid)) if c.get("rezerva_pct")]
+    if rezerve:
+        foaie.scrie("B3", "Rezervă preț: " + ", ".join(rezerve))
 
     # Etichetele din template (ex. 'Commissioning Sinexcel') primesc brandurile alese
     inlocuieste_branduri_foaie(foaie, branduri_skid, skid["brand"])
@@ -2665,6 +2673,10 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
         baterie = alege_baterie(date["bat"], baterii_map[model_baterie], incoterm)
     else:
         raise ValueError(f"Bateria '{model_baterie}' nu există în Pricing.xlsx. Selectează o baterie din listă.")
+    rezerva_bat = float(intrari.get("rezerva_bat") or 0)
+    if rezerva_bat:                       # rezervă de preț (ex. +10% în caz că se schimbă prețurile)
+        baterie = dict(baterie, pret_baza=baterie["pret"], rezerva_pct=rezerva_bat,
+                       pret=baterie["pret"] * (1 + rezerva_bat / 100))
     nr_baterii = math.ceil(intrari["mwh"] / baterie["cap"] - 1e-9)
     kva_baterie = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
     if brand == OPTIUNE_MANUALA_SKID:
@@ -2683,6 +2695,15 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
                                           kva_baterie=kva_baterie, forteaza_trafo=cu_trafo)
     if not optiuni:
         raise ValueError(mesaj_fara_skid(intrari["mw"], nr_baterii, brand, motive))
+    aplica_rezerva_skid(optiuni, float(intrari.get("rezerva_skid") or 0))
+    mw_max = float(intrari.get("mw_max") or 0)
+    if mw_max:                            # ex. Pi-ul instalației de stocare din ATR
+        peste = [o for o in optiuni if o["putere_totala"] > mw_max + 1e-6]
+        optiuni = [o for o in optiuni if o["putere_totala"] <= mw_max + 1e-6]
+        if not optiuni:
+            raise ValueError(f"Toate skidurile compatibile depășesc puterea maximă admisă de {nr_eu(mw_max)} MW "
+                             f"(ex. {peste[0]['tip']}: {nr_eu(peste[0]['putere_totala'])} MW).\n\nVerifică "
+                             "„Putere max. admisă” (din ATR) sau alege alt brand / nr. de skiduri.")
 
     specs = baterie["specs"] if baterie.get("manual") else specs_baterie(date.get("specs"), baterie["tip"])
     specs_lipsa = None
@@ -2696,6 +2717,18 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
     # trafo-ul aux extern depinde de skidul ales: e în fiecare opțiune (o["trafo"]); aici cel al celei mai ieftine
     return {"baterie": baterie, "nr_baterii": nr_baterii, "optiuni": optiuni, "motive": motive,
             "lista": lista, "exact": exact, "trafo": lista[0]["trafo"], "specs_lipsa": specs_lipsa}
+
+
+def aplica_rezerva_skid(optiuni, pct):
+    """Rezervă de preț pe skid (% peste prețul din Pricing / manual); reordonează după costul nou."""
+    if not pct:
+        return
+    for o in optiuni:
+        o["pret_unit_baza"], o["rezerva_pct"] = o["pret_unit"], pct
+        o["pret_unit"] = o["pret_unit"] * (1 + pct / 100)
+        o["pret_total"] = o["nr"] * o["pret_unit"]
+        o["cost_total"] = o["pret_total"] + (o["trafo"]["cost"] if o.get("trafo") else 0)
+    optiuni.sort(key=lambda o: o["cost_total"])
 
 
 def genereaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=()):
@@ -2837,6 +2870,185 @@ def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status
         cale_pdf, eroare_pdf = None, str(e)
     return {"nume": nume, "folder": folder, "cale_pptx": cale_pptx, "cale_pdf": cale_pdf,
             "cale_excel": rez["cale_excel"], "eroare_pdf": eroare_pdf, "ramase": ramase, "rez": rez}
+
+
+# ======================================================================
+# CITIRE ATR / STUDIU DE SOLUȚIE (fără Claude: tipare pe modelul ANRE)
+# ======================================================================
+def text_pdf(cale):
+    """Textul unui PDF (pypdf). Gol dacă PDF-ul e scanat (doar imagini)."""
+    try:
+        import pypdf
+    except ImportError:
+        raise RuntimeError("Lipsește biblioteca pypdf (pentru citirea PDF-urilor).") from None
+    cititor = pypdf.PdfReader(cale)
+    return "\n".join((pag.extract_text() or "") for pag in cititor.pages)
+
+
+def _nr_ro(text):
+    """'4100,000' -> 4100.0; '4.100,5' -> 4100.5; '7.700' (mii) -> 7700.0; '7,7' -> 7.7."""
+    t = str(text).strip().replace(" ", "")
+    if "," in t:
+        t = t.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", t):
+        t = t.replace(".", "")
+    return float(t)
+
+
+_NR = r"\d[\d.]*(?:,\d+)?"
+
+
+def _cauta(model, text, flags=re.I | re.S):
+    m = re.search(model, text, flags)
+    return m.group(1).strip() if m else None
+
+
+def citeste_atr_text(text):
+    """Datele unui ATR (model ANRE) sau ale unui studiu de soluție. Returnează un dicționar cu valorile găsite,
+    'avertismente' (ce trebuie verificat de mână) și propunerile pentru ofertă (mw, mw_max, mwh, poc_kv)."""
+    r = {"avertismente": [], "trafo_kva": []}
+    av = r["avertismente"]
+    # antetele / subsolurile repetate pe fiecare pagină (adresa operatorului, 'Pagina 4 / 13') rup tabelele: le scoatem
+    original = re.sub(r"\s+", " ", text)
+    linii = text.splitlines()
+    frecventa = {}
+    for l in linii:
+        frecventa[l.strip()] = frecventa.get(l.strip(), 0) + 1
+    tehnic = re.compile(r"kVA|kW|MW|kV\b|trafo|transformator|celul", re.I)   # rânduri identice dar reale
+    text = "\n".join(l for l in linii if not (frecventa[l.strip()] >= 3 and len(l.strip()) > 3
+                                                and not tehnic.search(l))
+                     and not re.fullmatch(r"\s*(Pagina\s*)?\d+\s*/\s*\d+\s*", l))
+    if len(text.split()) < 50:
+        r["scanat"] = True
+        av.append("Documentul pare scanat (fără text): completează valorile manual.")
+        return r
+    plat = re.sub(r"\s+", " ", text)
+
+    r["tip"] = ("Aviz tehnic de racordare" if re.search(r"AVIZ\s+TEHNIC\s+DE\s+RACORDARE", text, re.I)
+                else "Studiu de soluție" if re.search(r"studiu\w*\s+de\s+solu", plat, re.I) else "document")
+    for nume, cuvant in (("Distribuție Energie Electrică Romania (Electrica)", r"Distribu\w+ Energie Electric"),
+                         ("E-Distribuție", r"e-distribu"), ("Delgaz Grid", r"Delgaz"),
+                         ("Rețele Electrice", r"Re[țt]ele Electrice"), ("Distribuție Oltenia", r"Distribu\w+ Oltenia"),
+                         ("Transelectrica", r"Transelectrica")):
+        if re.search(cuvant, original, re.I):
+            r["operator"] = nume
+            break
+    m = re.search(r"nr\.?\s*(\d{4,})\s*/\s*(?:data\s*)?(\d{2}\.\d{2}\.\d{4})", plat, re.I)
+    if r["tip"] != "Aviz tehnic de racordare":       # studiu: ATR-ul la care se referă
+        m = re.search(r"avizul\s+tehnic\s+de\s+racordare\s+nr\.?\s*(\d+)\s+din\s+(\d{2}\.\d{2}\.\d{4})", plat, re.I)
+    if m:
+        r["nr"], r["data"] = m.group(1), m.group(2)
+    r["beneficiar"] = _cauta(r"adresat[ăa] de\s+(.+?),\s+pentru", plat) or \
+        _cauta(r"Beneficiar\s*:?\s*([A-ZĂÂÎȘȚŞŢ0-9 .&-]+?S\.?R\.?L\.?)", plat)
+    r["obiectiv"] = _cauta(r"adresat[ăa] de .{0,120}?,\s+pentru\s+(.{0,200}?)\s+ce\s+a?par[țţt]ine", plat)
+    r["amplasament"] = _cauta(r"amplasat\(?[ăa]?\)?\s+[îi]n\s+(jude[țţt]ul\s+[^,]+(?:,\s*-?\s*[^,]+)?)", plat)
+
+    # Punctul de racordare (tensiunea)
+    kv = _cauta(r"punctul de racord\w*\s+(?:este\s+stabilit|se\s+stabil\w*)\s+la\s+(?:nivelul\s+de\s+tensiune\s+|"
+                r"bara\s+de\s+)?(\d+(?:[,.]\d+)?)\s*kV", plat)
+    if kv:
+        r["poc_kv"] = _nr_ro(kv)
+
+    # Puterea aprobată (secțiunea 2, etapa finală = ultima valoare de pe rând)
+    sec = re.search(r"2\.\s*Puterea aprobat\w*(.+?)3\.\s*Descrierea", text, re.I | re.S)
+    if sec:
+        for m in re.finditer(r"\(kW\)((?:[ \t]+" + _NR + r")+)(.{0,300}?)\(kVA\)((?:[ \t]+" + _NR + r")*)",
+                             sec.group(1), re.S):
+            valori = re.findall(_NR, m.group(1))
+            eticheta = re.sub(r"\s+", " ", m.group(2)).lower()
+            if not valori:
+                continue
+            kw = _nr_ro(valori[-1])
+            kva = _nr_ro(re.findall(_NR, m.group(3))[-1]) if re.findall(_NR, m.group(3)) else None
+            if "absorbit" in eticheta:
+                r["abs_kw"] = kw
+            elif "evacuat" in eticheta and "întărire" not in eticheta and "intarire" not in eticheta \
+                    and "limitare" not in eticheta and "evac_kw" not in r:
+                r["evac_kw"], r["evac_kva"] = kw, kva
+            elif "limitare" in eticheta:
+                r["evac_limitare_kw"] = kw
+    # Studiu de soluție: tabelul normei tehnice (MW)
+    for cheie, eticheta in (("pi_is_kw", "Puterea activă instalată totală"),
+                            ("evac_kw", "Puterea activă maximă evacuată"),
+                            ("abs_is_kw", "Puterea activă maximă absorbită")):
+        v = _cauta(eticheta + r"\s+MW\s+[SDR, ]+\s*(" + _NR + ")", plat, re.I)
+        if v and cheie not in r:
+            r[cheie] = _nr_ro(v) * 1000
+    v = _cauta(r"Capacitatea maximă totală stocată de IS\s+MWh\s+[SDR, ]+\s*(" + _NR + ")", plat, re.I)
+    if v:
+        r["mwh"] = _nr_ro(v)
+
+    # Instalația de stocare (tabelul 1: Pi IS, Pmax evac IS, Pmax abs IS, capacitate)
+    tab = re.search(r"Instala\w+\s+de\s+stocare\s*:?(.{0,900}?)Instala\w+\s+de\s+stocare\s+de\s+tip", text, re.I | re.S)
+    if tab:
+        zec = r"(\d[\d.]*,\d+)"                          # valorile din tabel au zecimale (ex. 4800,000)
+        m = re.search(zec + r"\s+" + zec + r"\s+" + zec + r"\s+" + zec, tab.group(1))
+        if m:
+            r["pi_is_kw"], r["evac_is_kw"], r["abs_is_kw"] = (_nr_ro(m.group(i)) for i in (1, 2, 3))
+            r["capacitate_ah"] = _nr_ro(m.group(4))
+    pi_text = _cauta(r"stocare\s+(?:nou[ăa]?\s+)?(?:cu\s+)?Pi\s*=\s*(" + _NR + r"\s*(?:MW|kW))", plat)
+    if pi_text:
+        val = _nr_ro(re.sub(r"\s*(MW|kW)", "", pi_text, flags=re.I))
+        r["pi_text_kw"] = val * 1000 if re.search("MW", pi_text, re.I) else val
+    if "mwh" not in r:
+        v = _cauta(r"(" + _NR + r")\s*MWh", plat)
+        if v:
+            r["mwh"] = _nr_ro(v)
+
+    # Cuplare, absorbție, trafo-uri din instalație
+    r["cuplare_dc"] = bool(re.search(r"DC\s*/\s*DC|cuplat\w*\s+pe\s+(?:partea\s+de\s+)?(?:curent\s+continuu|DC)|"
+                                     r"cuplare\w*\s+(?:pe\s+)?(?:partea\s+de\s+)?(?:curent\s+continuu|DC)", plat, re.I))
+    r["fara_absorbtie"] = bool(re.search(r"f[aă]r[aă]\s+absorb|nu\s+va\s+absorbi|nu\s+se\s+va\s+[îi]nc[aă]rca\s+din\s+RED|"
+                                         r"[îi]nc[aă]rcare\s+exclusiv\s+din", plat, re.I)) or r.get("abs_is_kw") == 0
+    for m in re.finditer(r"(?:trafo|transformator\w*)(?:\s+de\s+putere)?\s+(" + _NR + r")\s*/\s*(" + _NR +
+                         r")\s*kV\s*[-–,]\s*(" + _NR + r")\s*(kVA|MVA)", plat, re.I):
+        context = plat[max(0, m.start() - 40):m.start()].lower()
+        if "servicii" in context or "auxiliar" in plat[m.start():m.start() + 40].lower():
+            continue
+        kva = _nr_ro(m.group(3)) * (1000 if m.group(4).upper() == "MVA" else 1)
+        r["trafo_kva"].append((kva, f"{m.group(1)}/{m.group(2)} kV"))
+    for m in re.finditer(r"transformator\w*\s+(" + _NR + r")\s*MVA,?\s*(\d+)\s*/\s*(\d+)\s*kV", plat, re.I):
+        r["trafo_kva"].append((_nr_ro(m.group(1)) * 1000, f"{m.group(2)}/{m.group(3)} kV"))
+
+    # Propunerile pentru ofertă
+    evac = r.get("evac_is_kw") or r.get("evac_kw")
+    if evac:
+        r["mw"] = evac / 1000
+    pi = r.get("pi_is_kw")
+    if pi and evac and pi > 2.5 * evac:
+        av.append(f"Pi stocare din tabel ({nr_eu(pi)} kW) e de peste 2,5 ori evacuarea: pare trecută capacitatea "
+                  "(kWh) în coloana de kW. Nu am folosit-o ca limită.")
+        pi = None
+    if pi and r.get("pi_text_kw") and abs(pi - r["pi_text_kw"]) > 1:
+        av.append(f"Pi stocare diferă: {nr_eu(pi)} kW în tabel, {nr_eu(r['pi_text_kw'])} kW în text. "
+                  "Am pus ca limită valoarea din tabel; verifică.")
+    pi = pi or r.get("pi_text_kw")
+    if pi:
+        r["mw_max"] = pi / 1000
+    if r.get("evac_kw") and r.get("evac_is_kw") and abs(r["evac_kw"] - r["evac_is_kw"]) > 1:
+        av.append(f"Evacuarea aprobată ({nr_eu(r['evac_kw'])} kW) diferă de Pmax evac IS ({nr_eu(r['evac_is_kw'])} kW).")
+    trafo_mt = sum(k for k, rap in r["trafo_kva"] if re.match(r"(20|22|33|35)\D|0[,.]", rap.split("/")[0] + " ")
+                   or "/0" in rap)
+    mici = [k for k, _ in r["trafo_kva"] if k < 500]
+    if mici and any(k >= 1000 for k, _ in r["trafo_kva"]):
+        av.append(f"Trafo de {nr_eu(mici[0])} kVA lângă trafo-uri mari: verifică (poate fi o greșeală, ex. 2500).")
+    if r["cuplare_dc"]:
+        av.append("ATR-ul prevede cuplarea stocării pe DC (DC/DC, prin invertoarele existente). Un MV skid AC "
+                  "înseamnă altă soluție decât cea aprobată (actualizare ATR?).")
+    if trafo_mt and pi and pi / 1000 > trafo_mt / 1000 * 1.0 + 1e-6 and r["cuplare_dc"]:
+        av.append(f"Pi stocare ({nr_eu(pi)} kW) > trafo-urile din parc ({nr_eu(trafo_mt)} kVA), prin care trece "
+                  "stocarea cuplată pe DC.")
+    if r["fara_absorbtie"]:
+        av.append("Fără absorbție din rețea: bateriile se încarcă doar din parc (de cerut prin EMS).")
+    if r.get("poc_kv") and r["poc_kv"] > 35:
+        sec_kv = [rap for k, rap in r["trafo_kva"] if rap.startswith(str(int(r["poc_kv"])))]
+        av.append(f"POC la {r['poc_kv']:g} kV: skidurile se leagă pe tensiunea medie a stației clientului"
+                  + (f" ({sec_kv[0]})" if sec_kv else "") + ". Alege POC-ul skidului în ofertă.")
+    if "mwh" not in r:
+        av.append("Capacitatea (MWh) nu apare în ATR (doar Ah): ia-o din cererea clientului.")
+    if not evac:
+        av.append("Nu am găsit puterea aprobată pentru evacuare.")
+    return r
 
 
 # ======================================================================
@@ -3134,12 +3346,16 @@ class AplicatieOferte:
         taburi.pack(padx=10, fill="x")
         self.taburi = taburi
         tab_oferta, tab_manual, tab_verificare = ttk.Frame(taburi), ttk.Frame(taburi), ttk.Frame(taburi)
+        tab_atr = ttk.Frame(taburi)
         taburi.add(tab_oferta, text="  Ofertă  ")
         taburi.add(tab_manual, text="  Componente manuale  ")
         taburi.add(tab_verificare, text="  Verificare calcul  ")
+        taburi.add(tab_atr, text="  📄 Citire ATR  ")
+        self.tab_oferta = tab_oferta
         self.tab_verificare = tab_verificare
         self._calcul_in_asteptare = None
         self._construieste_tab_verificare(tab_verificare)
+        self._construieste_tab_atr(tab_atr)
         frame = ttk.Frame(tab_oferta)
         frame.pack(side="left", padx=20, pady=10, anchor="n")
         self._construieste_panou_tabel(tab_oferta)
@@ -3176,7 +3392,8 @@ class AplicatieOferte:
             # cu Drive-ul conectat rămâne gol: nr. de contract se ia automat din BESS_Proposals
             ("Nr. proiect:", "" if DRIVE is not None else NR_PROIECT_IMPLICIT.format(an_luna=datetime.now().strftime("%Y%m"))),
             ("Locație:", "București, România"),
-            ("Capacitate (MWh):", "20"), ("Putere (MW):", "10"), ("Valoare EMS (USD):", f"{EMS_AUTO:g}"),
+            ("Capacitate (MWh):", "20"), ("Putere (MW):", "10"), ("Putere max. admisă (MW, opțional):", ""),
+            ("Valoare EMS (USD):", f"{EMS_AUTO:g}"),
             ("Valoare ENG (USD):", "0"), ("Adaos Comercial (Margin):", f"{ADAOS_IMPLICIT:.2f}"),
             ("Curs USD/EUR:", f"{CURS_IMPLICIT:g}"),
         ]
@@ -3563,14 +3780,15 @@ class AplicatieOferte:
             .grid(row=0, column=0, columnspan=2, padx=10, pady=8, sticky="w")
         self.manual = {"bat": {}, "skid": {}}
         self.combo_preia, self._skiduri_preia = {}, {}
+        self._construieste_rezerva(tab)
         for coloana, (cheie, titlu, campuri) in enumerate([("bat", "Baterie manuală", CAMPURI_BATERIE_MANUALA),
                                                            ("skid", "Skid manual", CAMPURI_SKID_MANUAL)]):
             grup = ttk.LabelFrame(tab, text=titlu)
-            grup.grid(row=1, column=coloana, padx=10, pady=5, sticky="n")
+            grup.grid(row=2, column=coloana, padx=10, pady=5, sticky="n")
             # completare rapidă din Pricing: se aleg brandul / modelul, apoi se modifică doar ce diferă (ex. prețul)
             ttk.Label(grup, text="Preia din Pricing:", font=("Helvetica", 10, "bold"))\
                 .grid(row=0, column=0, sticky="w", padx=5, pady=(6, 2))
-            combo = ttk.Combobox(grup, state="readonly", width=38)
+            combo = ttk.Combobox(grup, state="readonly", width=30)
             combo.grid(row=0, column=1, padx=5, pady=(6, 2))
             combo.bind("<<ComboboxSelected>>", lambda e, k=cheie: self._preia_din_pricing(k))
             self.combo_preia[cheie] = combo
@@ -3586,10 +3804,156 @@ class AplicatieOferte:
                     self.manual[cheie][camp] = var
                 else:
                     ttk.Label(grup, text=eticheta).grid(row=i, column=0, sticky="w", padx=5, pady=3)
-                    e = ttk.Entry(grup, width=22)
+                    e = ttk.Entry(grup, width=18)
                     e.insert(0, implicit)
                     e.grid(row=i, column=1, padx=5, pady=3)
                     self.manual[cheie][camp] = e
+
+    def _construieste_rezerva(self, tab):
+        """Rezervă de preț (%) peste prețul bateriei / skidului, pentru componentele manuale și cele din Pricing."""
+        grup = ttk.LabelFrame(tab, text="Rezervă de preț (în caz că se schimbă prețurile) – se aplică și "
+                                         "componentelor din Pricing")
+        grup.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="w")
+        self.rezerva = {}
+        for i, (cheie, eticheta) in enumerate((("bat", "Baterie (+%):"), ("skid", "Skid (+%):"))):
+            ttk.Label(grup, text=eticheta).grid(row=0, column=2 * i, padx=(8, 4), pady=6)
+            e = ttk.Entry(grup, width=8)
+            e.grid(row=0, column=2 * i + 1, padx=(0, 12), pady=6)
+            self.rezerva[cheie] = e
+
+        def seteaza(valoare):
+            for e in self.rezerva.values():
+                e.delete(0, "end")
+                e.insert(0, valoare)
+        ttk.Button(grup, text="+10% la ambele", command=lambda: seteaza("10")).grid(row=0, column=4, padx=4)
+        ttk.Button(grup, text="Fără rezervă", command=lambda: seteaza("")).grid(row=0, column=5, padx=4)
+        ttk.Label(grup, foreground="gray", text="Prețul cu rezervă apare în Excel ca formulă (ex. =85000*(1+10%)).")\
+            .grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=(0, 6))
+
+    # ---------------- citire ATR ----------------
+    def _construieste_tab_atr(self, tab):
+        ttk.Label(tab, foreground="gray", wraplength=1000, justify="left",
+                  text="Alege un ATR (aviz tehnic de racordare) sau un studiu de soluție în PDF. Programul citește "
+                       "puterea aprobată, instalația de stocare, punctul de racordare și trafo-urile, apoi poți "
+                       "completa oferta cu aceste valori. Documentele scanate (poze) nu se pot citi.")\
+            .pack(anchor="w", padx=10, pady=8)
+        butoane = ttk.Frame(tab)
+        butoane.pack(anchor="w", padx=10)
+        ttk.Button(butoane, text="📄 Alege ATR (PDF)…", command=self.citeste_atr).pack(side="left", padx=(0, 8))
+        self.btn_completeaza_atr = tk.Button(butoane, text="➡ Completează oferta cu aceste valori", state="disabled",
+                                             command=self._completeaza_din_atr, **STIL_BUTON)
+        self.btn_completeaza_atr.pack(side="left")
+        cadru = ttk.Frame(tab)
+        cadru.pack(fill="both", expand=True, padx=10, pady=8)
+        self.txt_atr = tk.Text(cadru, height=24, wrap="word", font=("Consolas", 10))
+        bara = ttk.Scrollbar(cadru, command=self.txt_atr.yview)
+        self.txt_atr.configure(yscrollcommand=bara.set, state="disabled")
+        bara.pack(side="right", fill="y")
+        self.txt_atr.pack(side="left", fill="both", expand=True)
+        self._atr = None
+
+    def citeste_atr(self):
+        cale = filedialog.askopenfilename(title="Alege ATR-ul (PDF)", filetypes=[("PDF", "*.pdf")])
+        if not cale:
+            return
+        try:
+            text = text_pdf(cale)
+        except RuntimeError as e:
+            if "pypdf" in str(e) and messagebox.askyesno(
+                    "Citire ATR", "Pentru citirea PDF-urilor trebuie instalată o dată biblioteca pypdf.\n\n"
+                                  "O instalez acum? (durează câteva secunde, e nevoie de internet)"):
+                rez = subprocess.run([sys.executable.replace("pythonw", "python"), "-m", "pip", "install", "--user",
+                                      "pypdf"], capture_output=True, text=True)
+                if rez.returncode != 0:
+                    messagebox.showerror("Citire ATR", f"Instalarea nu a mers:\n{rez.stderr[-800:]}")
+                    return
+                import importlib
+                import site
+                site.addsitedir(site.getusersitepackages())       # folderul --user poate fi nou
+                importlib.invalidate_caches()
+                text = text_pdf(cale)
+            else:
+                return
+        except Exception as e:
+            messagebox.showerror("Citire ATR", f"Nu pot citi PDF-ul:\n{e}")
+            return
+        r = citeste_atr_text(text)
+        r["fisier"] = os.path.basename(cale)
+        self._atr = r
+        self._arata_atr(r)
+        self.btn_completeaza_atr.config(state="disabled" if r.get("scanat") or not r.get("mw") else "normal")
+
+    def _arata_atr(self, r):
+        kw = lambda v: f"{nr_eu(v)} kW" if v is not None else "-"
+        linii = [f"📄 {r.get('fisier', '')}", ""]
+        if not r.get("scanat"):
+            linii += [
+                f"Tip document:          {r.get('tip', '-')}",
+                f"Operator:              {r.get('operator', '-')}",
+                f"Nr. / data:            {r.get('nr', '-')} / {r.get('data', '-')}",
+                f"Beneficiar:            {r.get('beneficiar') or '-'}",
+                f"Obiectiv:              {r.get('obiectiv') or '-'}",
+                f"Amplasament:           {r.get('amplasament') or '-'}",
+                f"Punct de racordare:    {nr_eu(r['poc_kv']) + ' kV' if r.get('poc_kv') else '-'}",
+                "",
+                "PUTERE APROBATĂ",
+                f"  evacuare în rețea:   {kw(r.get('evac_kw'))}" + (f" / {nr_eu(r['evac_kva'])} kVA" if r.get("evac_kva") else ""),
+                f"  absorbție din rețea: {kw(r.get('abs_kw'))}",
+                "",
+                "INSTALAȚIA DE STOCARE",
+                f"  Pi stocare (tabel):  {kw(r.get('pi_is_kw'))}" + (f"   (în text: {kw(r.get('pi_text_kw'))})" if r.get("pi_text_kw") else ""),
+                f"  Pmax evacuare IS:    {kw(r.get('evac_is_kw'))}",
+                f"  Pmax absorbție IS:   {kw(r.get('abs_is_kw'))}",
+                f"  capacitate:          " + (f"{nr_eu(r['mwh'])} MWh" if r.get("mwh") else "-")
+                + (f"   ({nr_eu(r['capacitate_ah'])} Ah)" if r.get("capacitate_ah") else ""),
+                f"  cuplare pe DC:       {'DA' if r.get('cuplare_dc') else 'nu'}",
+                f"  fără absorbție:      {'DA' if r.get('fara_absorbtie') else 'nu'}",
+                "",
+                "TRAFO-URI ÎN INSTALAȚIE: " + (", ".join(f"{nr_eu(k)} kVA ({rap})" for k, rap in r["trafo_kva"])
+                                               or "-"),
+                "",
+                "PROPUNERE PENTRU OFERTĂ",
+                f"  Putere (MW) = evacuarea aprobată:        {nr_eu(r['mw']) if r.get('mw') else '-'}",
+                f"  Putere max. admisă (MW) = Pi stocare:    {nr_eu(r['mw_max']) if r.get('mw_max') else '-'}",
+                f"  Capacitate (MWh):                        {nr_eu(r['mwh']) if r.get('mwh') else 'din cererea clientului'}",
+                "  Skidul poate fi mai mare decât evacuarea (limitat prin EMS), dar nu peste puterea max. admisă.",
+            ]
+        if r["avertismente"]:
+            linii += ["", "DE VERIFICAT"] + [f"  ⚠ {a}" for a in r["avertismente"]]
+        self.txt_atr.configure(state="normal")
+        self.txt_atr.delete("1.0", "end")
+        self.txt_atr.insert("1.0", "\n".join(linii))
+        self.txt_atr.configure(state="disabled")
+
+    def _completeaza_din_atr(self):
+        r = self._atr
+        if not r:
+            return
+
+        def pune(eticheta, valoare):
+            if valoare not in (None, ""):
+                self.intrari[eticheta].delete(0, "end")
+                self.intrari[eticheta].insert(0, valoare)
+        pune("Putere (MW):", nr_eu(r["mw"]).replace(".", "") if r.get("mw") else None)
+        pune("Putere max. admisă (MW, opțional):", nr_eu(r["mw_max"]).replace(".", "") if r.get("mw_max") else "")
+        if r.get("mwh"):
+            pune("Capacitate (MWh):", nr_eu(r["mwh"]).replace(".", ""))
+        if r.get("beneficiar"):
+            pune("Client:", r["beneficiar"])
+        if r.get("amplasament"):
+            pune("Locație:", re.sub(r"(?i)^jude[țţt]ul\s+", "", r["amplasament"]).replace(", -", ",").strip()
+                 + ", Romania")
+        if r.get("poc_kv") and r["poc_kv"] <= 35:
+            valori = list(self.combo_poc["values"])
+            potrivit = next((v for v in valori if abs(float(re.match(r"\s*(\d+(?:[.,]\d+)?)", v).group(1)
+                                                                 .replace(",", ".")) - r["poc_kv"]) < 1e-6), None)
+            if potrivit:
+                self.combo_poc.set(potrivit)
+        self.taburi.select(self.tab_oferta)
+        messagebox.showinfo("Citire ATR", "Am completat: Putere, Putere max. admisă"
+                            + (", Capacitate" if r.get("mwh") else "") + ", Client, Locație și POC.\n\n"
+                            "Verifică valorile (mai ales cele cu ⚠ din tab-ul ATR) și completează ce lipsește "
+                            "(ex. capacitatea din cererea clientului).")
 
     def _actualizeaza_liste_preia(self):
         """Listele „Preia din Pricing” (toate bateriile și skidurile din Pricing)."""
@@ -3850,6 +4214,9 @@ class AplicatieOferte:
                 "adaos": float(g("Adaos Comercial (Margin):").replace(",", ".")),
                 "curs": float(g("Curs USD/EUR:").replace(",", ".")),
                 "poc_kv": float(re.match(r"\s*(\d+(?:[.,]\d+)?)", self.combo_poc.get()).group(1).replace(",", ".")),
+                "mw_max": float(g("Putere max. admisă (MW, opțional):").replace(",", ".") or 0),
+                "rezerva_bat": float(self.rezerva["bat"].get().replace(",", ".").replace("%", "") or 0),
+                "rezerva_skid": float(self.rezerva["skid"].get().replace(",", ".").replace("%", "") or 0),
             }
         except (ValueError, AttributeError):
             raise ValueError("Unul dintre câmpurile numerice (sau punctul de conexiune) nu conține un număr valid.")
@@ -3954,7 +4321,11 @@ class AplicatieOferte:
         txt = (f"Cerut: {intrari['mwh']:g} MWh / {intrari['mw']:g} MW, conexiune {intrari['poc_kv']:g} kV\n"
                f"Baterii: {nr_baterii} x {baterie['tip']} = {cap_prop:.3f} MWh "
                f"\nLivrare: {INCOTERMS[baterie['incoterm']]}"
-               f"\nEMS: {bani_eu(intrari['ems'], 0)} $"
+               + (f"\nPutere max. admisă: {nr_eu(intrari['mw_max'])} MW (skidurile peste ea nu se propun)"
+                  if intrari.get("mw_max") else "")
+               + (f"\nRezervă de preț: baterie +{intrari.get('rezerva_bat') or 0:g}%, skid +{intrari.get('rezerva_skid') or 0:g}%"
+                  if intrari.get("rezerva_bat") or intrari.get("rezerva_skid") else "")
+               + f"\nEMS: {bani_eu(intrari['ems'], 0)} $"
                + (f" (automat după capacitatea ofertată {cap_prop:.3f} MWh, prag {EMS_PRAG_MWH:g} MWh)"
                   if intrari.get("ems_auto") else " (scris de mână)")
                + (f"\nPreț {baterie['incoterm']}: {baterie['pret']:,.2f} $/MWh (✎ baterie introdusă manual, "

@@ -453,6 +453,128 @@ class CalculDeProba(unittest.TestCase):
         self.assertFalse(any(m == "PATCH" for m, _ in cereri))
 
 
+ANTET = "Distribuție Energie Electrică Romania\nStr. Exemplu, Nr. 1, Cluj-Napoca\nTel: +40 000 000 000\n"
+ATR_TEST = (ANTET + """AVIZ TEHNIC DE RACORDARE
+nr. 1234567890/data 01.04.2026
+Ca urmare a cererii înregistrate cu nr. 1234567890 din data 26.03.2026, având ca scop Modificarea instalatiei
+adresată de FIRMA TEST SRL, pentru CEM 4,1 MW TEST ce aparţine utilizatorului FIRMA TEST SRL
+amplasat(ă) în judeţul Bihor, - LUNCA, sat X, in conditiile mentionate in continuare.
+d) Instalatie de stocare:
+Tabelul 1
+Nr. crt. Tip IS* Pi IS (kW) Pmax evac IS (kW) Pmax abs IS (kW) Capacitate (Ah) Observaţii
+1 2 3 4 5 6 7
+1 li-ion 4800,000 4100,000 0,000 13440,00
+   * Instalaţie de stocare de tip electric (baterie Li-Ion), termic, cinetic.
+3 / 14
+""" + ANTET + """2. Puterea aprobata:
+Etapa finală
+(kW) 4100,000 4100,000 4100,000Puterea maximă simultană ce poate fi
+""" + ANTET + """evacuată (kVA) 4550,000 4550,000 4550,000
+(kW)
+Puterea maximă simultană ce poate fi evacuată fără realizarea lucrărilor de întărire
+(kVA)
+(kW) 12,000 12,000 12,000Puterea maximă simultană ce poate fi absorbită din reţea (kVA) 13,333 13,333 13,333
+3.Descrierea succintă a soluţiei de racordare
+a) Punctul de racordare este stabilit la nivelul de tensiune 20 kV, la LEA 20 kV TEST
+* trafo 20/0,69 kV - 1600 kVA;
+* trafo servicii auxiliare 0,69/0,4 kV - 16 kVA;
+* trafo 20/0,69 kV - 1600 kVA;
+* trafo 20/0,69 kV - 1600 kVA;
+c') In instalatia de utilizare se va monta o instalatie de stocare cu Pi = 4,1 MW.
+Cuplarea baterie de stocare se face pe partea de curent continuu, cuplare DC/DC.
+IS nou instalata nu va absorbi putere activa din RED.
+""" + ANTET) * 1
+
+
+class CitireATR(unittest.TestCase):
+    def test_atr_model_anre(self):
+        r = g.citeste_atr_text(ATR_TEST + " cuvânt" * 60)
+        self.assertEqual((r["nr"], r["data"], r["beneficiar"]), ("1234567890", "01.04.2026", "FIRMA TEST SRL"))
+        self.assertTrue(r["operator"].startswith("Distribuție Energie Electrică"))
+        self.assertEqual(r["poc_kv"], 20)
+        self.assertEqual((r["evac_kw"], r["evac_kva"], r["abs_kw"]), (4100, 4550, 12))   # cu antet între rânduri
+        self.assertEqual((r["pi_is_kw"], r["evac_is_kw"], r["abs_is_kw"]), (4800, 4100, 0))
+        self.assertEqual([k for k, _ in r["trafo_kva"]], [1600, 1600, 1600])      # fără trafo-ul de servicii
+        self.assertEqual((r["mw"], r["mw_max"]), (4.1, 4.8))
+        self.assertTrue(r["cuplare_dc"] and r["fara_absorbtie"])
+        av = " ".join(r["avertismente"])
+        self.assertIn("4100 kW în text", av)                 # Pi diferit în tabel față de text
+        self.assertIn("cuplarea stocării pe DC", av)
+        self.assertIn("MWh", av)
+
+    def test_kwh_in_coloana_de_kw(self):
+        text = ATR_TEST.replace("4800,000 4100,000", "4179,900 996,000").replace("4100,000", "996,000")
+        r = g.citeste_atr_text(text + " cuvânt" * 60)
+        self.assertIsNone(r.get("mw_max") if r.get("pi_text_kw") is None else None)
+        self.assertIn("kWh", " ".join(r["avertismente"]))
+
+    def test_studiu_de_solutie(self):
+        text = ("Actualizare Studiu de solutie privind Racordarea la SEN avand avizul tehnic de racordare nr. 18189 "
+                "din 12.12.2024 Rețele Electrice Dobrogea. punctul de racord se stabiliteste la bara de 20 kV din statie. "
+                "Puterea activă instalată totală MW S, D, R 7,7 Puterea activă maximă evacuată MW S, D, R 7 "
+                "Puterea activă maximă absorbită MW S, D, R 0 Capacitatea maximă totală stocată de IS MWh S, D, R 15,4 "
+                "cu încărcare exclusiv din CEF " + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["tip"], r["nr"], r["poc_kv"]), ("Studiu de soluție", "18189", 20))
+        self.assertEqual((r["mw"], r["mw_max"], r["mwh"]), (7.0, 7.7, 15.4))
+        self.assertTrue(r["fara_absorbtie"])
+
+    def test_document_scanat(self):
+        r = g.citeste_atr_text("   ")
+        self.assertTrue(r["scanat"])
+
+    def test_viteza(self):
+        import time
+        t0 = time.time()
+        g.citeste_atr_text((ATR_TEST + " (kW) " + "1,0 " * 50 + "\n") * 40)
+        self.assertLess(time.time() - t0, 5)                  # fără blocaje pe documente mari
+
+
+class RezervaSiPutereMaxima(unittest.TestCase):
+    def setUp(self):
+        self.date = date_test()
+        self.baterii = g.lista_baterii(self.date["bat"])
+
+    def oferta(self, **extra):
+        intrari = dict(intrari_test(20, 10), **extra)
+        return g.pregateste_oferta(self.date, self.baterii, intrari, JINKO_2H, "DDP", "Oricare", None, None)
+
+    def test_rezerva_10_la_suta(self):
+        fara, cu = self.oferta(), self.oferta(rezerva_bat=10, rezerva_skid=10)
+        self.assertAlmostEqual(cu["baterie"]["pret"], fara["baterie"]["pret"] * 1.1)
+        self.assertEqual(cu["baterie"]["pret_baza"], fara["baterie"]["pret"])
+        o_fara, o_cu = fara["lista"][0], cu["lista"][0]
+        self.assertAlmostEqual(o_cu["pret_unit"], o_fara["pret_unit"] * 1.1)
+        self.assertAlmostEqual(o_cu["cost_total"], o_cu["pret_total"] + o_cu["trafo"]["cost"])
+
+    def test_rezerva_in_excel_ca_formula(self):
+        p = self.oferta(rezerva_bat=10, rezerva_skid=5)
+        o = p["lista"][0]
+
+        class Foaie:
+            def __init__(s): s.scrieri = {}
+            def scrie(s, a, v): s.scrieri[a] = v
+            def format_numar(s, *a): pass
+            def ingroasa(s, *a): pass
+            def formule(s): return 1, 1, []
+            def calculeaza(s): pass
+            def citeste(s, a): return 1
+        f = Foaie()
+        from datetime import datetime
+        g.completeaza_calcul(f, dict(intrari_test(), versiune=1), p["baterie"], p["nr_baterii"], o, o["trafo"],
+                             datetime(2026, 11, 10))
+        self.assertEqual(f.scrieri["A5:D5"][0][3], "=85000.0*(1+10%)")
+        self.assertTrue(f.scrieri["A6:D6"][0][3].endswith("*(1+5%)"))
+        self.assertIn("Rezervă preț", f.scrieri["B3"])
+
+    def test_putere_maxima_admisa(self):
+        # 10 MW cerut: fără limită iese 2 x 5 MW; cu max. 9 MW nu mai e niciun skid valid
+        self.assertEqual(self.oferta()["lista"][0]["putere_totala"], 10)
+        with self.assertRaisesRegex(ValueError, "puterea maximă admisă"):
+            self.oferta(mw_max=9)
+        self.assertEqual(self.oferta(mw_max=10)["lista"][0]["putere_totala"], 10)
+
+
 class Actualizare(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

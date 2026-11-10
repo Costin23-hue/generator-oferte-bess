@@ -27,7 +27,7 @@ jobs:
 
       # Versiuni fixe: pandas 2.3.3 e versiunea pe care politica de securitate Windows o lasă să ruleze
       - name: Instaleaza bibliotecile
-        run: python -m pip install pyinstaller "pandas==2.3.3" openpyxl xlwings python-pptx
+        run: python -m pip install pyinstaller "pandas==2.3.3" openpyxl xlwings python-pptx pypdf
 
       # Testele automate (teste/): dacă unul pică, aplicația nu se mai construiește
       - name: Ruleaza testele
