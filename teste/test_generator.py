@@ -224,6 +224,12 @@ class Formatare(unittest.TestCase):
         self.assertEqual(g.text_putere_propusa(10, 10), "10")
         self.assertEqual(g.text_putere_propusa(7.5, 7.5), "7,5")
 
+    def test_nume_proiect_in_tabel(self):
+        self.assertEqual(g.nume_proiect_tabel("Sinesti", 12.5, 4), "Sinesti_BESS, 12,5MWh, 4MW")
+        self.assertEqual(g.nume_proiect_tabel("Vrancea", 10, 2.5), "Vrancea_BESS, 10MWh, 2,5MW")
+        self.assertEqual(g.nume_proiect_tabel("Olt_BESS", 5, 2.5), "Olt_BESS, 5MWh, 2,5MW")
+        self.assertEqual(g.nume_proiect_tabel("TULCEA_BESS, 15MWh, 7,5MW", 15.4, 7.7), "TULCEA_BESS, 15MWh, 7,5MW")
+
     def test_ore_baterie(self):
         self.assertEqual(g.ore_baterie(JINKO_2H), 2)
         self.assertEqual(g.ore_baterie(REPT), 4)

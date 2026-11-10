@@ -2396,8 +2396,26 @@ def _valoare_text(inregistrare, camp):
     return "" if valoare is None else str(valoare)
 
 
+# Numele proiectului în BESS_Proposals, ca în restul tabelului: 'Sinesti_BESS, 12,5MWh, 4MW'
+NUME_PROIECT_TABEL = "{proiect}_BESS, {mwh}MWh, {mw}MW"
+
+
+def nume_proiect_tabel(proiect, mwh, mw):
+    """'Sinesti', 12.5, 4 -> 'Sinesti_BESS, 12,5MWh, 4MW'. Dacă numele are deja MWh/MW, rămâne cum e."""
+    proiect = str(proiect).strip()
+    if re.search(r"MWh", proiect, re.I) and re.search(r"\bMW\b|\dMW", proiect):
+        return proiect
+    proiect = re.sub(r"[_\s]*BESS\s*$", "", proiect, flags=re.I)        # fără '_BESS_BESS'
+    try:
+        return NUME_PROIECT_TABEL.format(proiect=proiect, mwh=nr_eu(float(mwh)), mw=nr_eu(float(mw)))
+    except (TypeError, ValueError):
+        return proiect
+
+
 def trece_in_tabel(inregistrare, confirma_suprascriere):
     """Completează în BESS_Proposals rândul cu nr. de contract al ofertei. Returnează rândul sau None (anulat)."""
+    inregistrare = dict(inregistrare, proiect=nume_proiect_tabel(inregistrare.get("proiect", ""),
+                                                                 inregistrare.get("mwh"), inregistrare.get("mw")))
     cfg = TABELE_OFERTE[inregistrare["tara"]]
     rand, client_existent = next(((r, c) for r, nr, c in contracte_din_tabel(inregistrare["tara"])
                                   if nr == inregistrare["nr"]), (None, None))
