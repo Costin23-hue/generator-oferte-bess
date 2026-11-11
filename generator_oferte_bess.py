@@ -3131,6 +3131,33 @@ def _cauta(model, text, flags=re.I | re.S):
     return m.group(1).strip() if m else None
 
 
+def _citeste_caiet_sarcini(plat, r):
+    """Caiet de sarcini / specificație tehnică (licitații): obiectiv, beneficiar, amplasament, puterea instalată
+    minimă (AC), capacitatea, evacuarea aprobată (din ATR-ul citat), trafo minim, invertoare string."""
+    r["obiectiv"] = _cauta(r"Denumirea\s+obiectivului\s+de\s+investi\w+\s+(.{5,200}?)\s+Beneficiar", plat)
+    r["beneficiar"] = _cauta(r"Beneficiar\s*/\s*Achizitor.{0,80}?\)\s*(.{3,80}?S\.?R\.?L\.?|.{3,80}?S\.?A\.)", plat)
+    r["amplasament"] = _cauta(r"Amplasament\s+(.{3,150}?jude[țţt]ul\s+[\wăâîșțşţĂÂÎȘȚ-]+)", plat)
+    kw = _cauta(r"putere\s+total\w*\s+instalat\w*\s+[îi]n\s+curent\s+alternativ\s+de\s+minimum\s+(" + _NR + r")\s*kW",
+                plat, re.I)
+    if kw:
+        r["mw_min"] = _nr_ro(kw) / 1000
+    else:
+        mw = _cauta(r"putere\s+nominal\w*\s+de\s+(\d+,\d+|\d+)\s*MW", plat, re.I)
+        if mw:
+            r["mw_min"] = _nr_ro(mw)
+    m = re.search(r"puterea\s+maxim\w*\s+aprobat\w*\s+pentru\s+evacuare(\s*/\s*absorb\w*)?.{0,40}?:\s*(\d+(?:,\d+)?)\s*MW",
+                  plat, re.I)
+    if m:
+        r["evac_kw"] = _nr_ro(m.group(2)) * 1000
+        if m.group(1):
+            r["abs_kw"] = r["evac_kw"]
+    t = _cauta(r"putere\s+total\w*\s+instalat\w*\s+a\s+transformatoarelor\s+de\s+minimum\s+(" + _NR + r")\s*kVA", plat)
+    if t:
+        r["trafo_min_kva"] = _nr_ro(t)
+    r["cere_string"] = bool(re.search(r"arhitectur\w*\s+obligatori\w*\s+de\s+tip\s+.{0,3}string|"
+                                      r"mandatory\s+.{0,3}string", plat, re.I))
+
+
 def citeste_atr_text(text):
     """Datele unui ATR (model ANRE) sau ale unui studiu de soluție. Returnează un dicționar cu valorile găsite,
     'avertismente' (ce trebuie verificat de mână) și propunerile pentru ofertă (mw, mw_max, mwh, poc_kv)."""
@@ -3157,11 +3184,15 @@ def citeste_atr_text(text):
 
     r["tip"] = ("Aviz tehnic de racordare" if re.search(r"AVIZ\s+TEHNIC\s+DE\s+RACORDARE", text, re.I)
                 else "Studiu de soluție" if re.search(r"studiu\w*\s+de\s+solu", plat, re.I)
+                else "Caiet de sarcini" if re.search(r"SPECIFICA[ȚŢT]IA\s+TEHNIC|Technical\s+Specification|"
+                                                     r"caiet\w*\s+de\s+sarcini", plat, re.I)
                 else "Schemă de stație" if re.search(r"Schema\s+normal", plat, re.I) else "document")
     if r["tip"] in ("Schemă de stație", "document"):
         av.append("Documentul nu pare a fi un ATR sau un studiu de soluție"
                   + (" (e schema normală a unei stații)" if r["tip"] == "Schemă de stație" else "")
                   + ": valorile de mai jos pot lipsi sau nu se aplică.")
+    if r["tip"] == "Caiet de sarcini":
+        _citeste_caiet_sarcini(plat, r)
     for nume, cuvant in (("Distribuție Energie Electrică Romania (Electrica)", r"Distribu\w+ Energie Electric"),
                          ("E-Distribuție", r"e-distribu"), ("Delgaz Grid", r"Delgaz"),
                          ("Rețele Electrice", r"Re[țt]ele Electrice"), ("Distribuție Oltenia", r"Distribu\w+ Oltenia"),
@@ -3173,23 +3204,26 @@ def citeste_atr_text(text):
     m = re.search(r"nr\.?\s*(\d{4,})\s*/\s*(?:data\s*)?" + data_re, plat, re.I) or \
         re.search(r"racordare\s+nr\.?\s*(\d{4,})\s+din\s+(?:data\s+)?" + data_re, plat, re.I) or \
         re.search(r"racordare\s+nr\s+din\s+(?:data\s+)?(\d{4,})\s+" + data_re, plat, re.I)  # câmpuri mutate la final
-    if r["tip"] != "Aviz tehnic de racordare":       # studiu: ATR-ul la care se referă
+    if r["tip"] == "Caiet de sarcini":
+        m = re.search(r"conform\s+ATR\s+nr\.?\s*(\d+)\s*/\s*(\d{2}\.\d{2}\.\d{4})", plat, re.I)
+    elif r["tip"] != "Aviz tehnic de racordare":     # studiu: ATR-ul la care se referă
         m = re.search(r"avizul\s+tehnic\s+de\s+racordare\s+nr\.?\s*(\d+)\s+din\s+(\d{2}\.\d{2}\.\d{4})", plat, re.I)
     if m:
         r["nr"], r["data"] = m.group(1), m.group(2).replace("/", ".")
     r["consumator"] = bool(re.search(r"PENTRU\s+CONSUMATOR", plat, re.I))   # rafinat după puterea aprobată
-    r["beneficiar"] = _cauta(r"adresat[ăa] de\s+(.+?),\s+pentru", plat) or \
+    r["beneficiar"] = r.get("beneficiar") or _cauta(r"adresat[ăa] de\s+(.+?),\s+pentru", plat) or \
         _cauta(r"utilizatorului\s+(.{3,80}?),\s+cu\s+(?:domiciliul|sediul)", plat) or \
         _cauta(r"Beneficiar\s*:?\s*([A-ZĂÂÎȘȚŞŢ0-9 .&-]+?S\.?R\.?L\.?)", plat)
     if not r["beneficiar"]:      # Rețele Electrice (consumator): valorile apar după etichete, la capăt de rând
         zona = _cauta(r"utilizatorului(.{0,250})", plat) or ""
         r["beneficiar"] = _cauta(r"((?:S\.?C\.?\s+)?[A-ZĂÂÎȘȚŞŢ][A-ZĂÂÎȘȚŞŢ0-9 .&-]{2,60}?\s(?:S\.?R\.?L\.?|S\.?A\.?))(?![A-Z])",
                                  zona, re.S)
-    r["obiectiv"] = _cauta(r"adresat[ăa] de .{0,120}?,\s+pentru\s+(.{0,200}?)\s+ce\s+a?par[țţt]ine", plat) or \
+    r["obiectiv"] = r.get("obiectiv") or \
+        _cauta(r"adresat[ăa] de .{0,120}?,\s+pentru\s+(.{0,200}?)\s+ce\s+a?par[țţt]ine", plat) or \
         _cauta(r"se\s+aprob\w*\s+racordarea.{0,90}?(?:consum\s+[sș]i\s+de\s+producere|producere|consum)\s+(?:permanent/temporar\s+)?"
                r"([^()]{2,80}?)\s*\(denumirea\)", plat) or \
         _cauta(r"\(denumirea[^)]*\)\s*([A-ZĂÂÎȘȚ0-9][A-ZĂÂÎȘȚ0-9 .,+-]{2,60}?)\s*(?:\n|amplasat)", text, re.S)
-    r["amplasament"] = _cauta(r"amplasat\(?[ăa]?\)?\s+[îi]n\s+(jude[țţt]ul\s+[^,]+(?:,\s*-?\s*[^,]+)?)", plat)
+    r["amplasament"] = r.get("amplasament") or _cauta(r"amplasat\(?[ăa]?\)?\s+[îi]n\s+(jude[țţt]ul\s+[^,]+(?:,\s*-?\s*[^,]+)?)", plat)
     if r["amplasament"]:                              # 'municipiul/ orasul/ comuna/ sat/ sector GURBANESTI' -> 'GURBANESTI'
         r["amplasament"] = re.sub(r"(?:municipiul|ora[sș]ul|comuna|sat|sector)(?:\s*/\s*(?:municipiul|ora[sș]ul|comuna|"
                                   r"sat|sector))+\s*", "", r["amplasament"])
@@ -3203,6 +3237,7 @@ def citeste_atr_text(text):
                 r"(?:nivelul\s+de\s+tensiune\s+(?:de\s+)?|bara\s+de\s+|tensiunea\s+de\s+)?(\d+(?:[,.]\d+)?)\s*kV", plat)
     kv = kv or _cauta(r"punct\w*\s+de\s+racord\w*\s+este\s+stabilit\s+la\s+nivelul\s+de\s+tensiune\s+kV,\s*la\s*,?\s*"
                       r"(\d+(?:[,.]\d+)?)\s", plat)          # valoarea mutată după 'kV, la ,'
+    kv = kv or _cauta(r"punct\w*\s+de\s+(?:conexiun\w*|racord\w*)\s+(?:existent\s+)?de\s+(\d+(?:[,.]\d+)?)\s*kV", plat)
     if kv:
         r["poc_kv"] = _nr_ro(kv)
 
@@ -3391,6 +3426,17 @@ def citeste_atr_text(text):
                       "(rack-uri scoase?). Verifică.")
     if "mwh" not in r:
         av.append("Capacitatea (MWh) nu apare în ATR (doar Ah): ia-o din cererea clientului.")
+    if r.get("mw_min"):
+        av.append(f"Caietul de sarcini cere minimum {nr_eu(r['mw_min'])} MW instalați (AC)"
+                  + (f", iar evacuarea aprobată e {nr_eu(r['evac_kw'] / 1000)} MW: skidurile trebuie să aibă "
+                     f"cel puțin {nr_eu(r['mw_min'])} MW, limitate prin EMS la {nr_eu(r['evac_kw'] / 1000)} MW. "
+                     "Alege Nr. skiduri / skidul astfel încât puterea să ajungă la minimul cerut."
+                     if r.get("evac_kw") and r["evac_kw"] / 1000 < r["mw_min"] - 1e-6 else "."))
+    if r.get("cere_string"):
+        av.append("Caietul cere invertoare de tip STRING (arhitectură obligatorie): un MV skid cu PCS central "
+                  "poate fi declarat neconform.")
+    if r.get("trafo_min_kva"):
+        av.append(f"Post de transformare cerut: minimum {nr_eu(r['trafo_min_kva'])} kVA.")
     if not evac and not r["consumator"]:
         av.append("Nu am găsit puterea aprobată pentru evacuare.")
     return r
@@ -4406,6 +4452,7 @@ class AplicatieOferte:
                 "PROPUNERE PENTRU OFERTĂ",
                 f"  Putere (MW) = evacuarea aprobată:        {nr_eu(r['mw']) if r.get('mw') else '-'}",
                 f"  Putere max. admisă (MW) = Pi stocare:    {nr_eu(r['mw_max']) if r.get('mw_max') else '-'}",
+                *([f"  Putere instalată minimă cerută (MW):     {nr_eu(r['mw_min'])}"] if r.get("mw_min") else []),
                 f"  Capacitate (MWh):                        {nr_eu(r['mwh']) if r.get('mwh') else 'din cererea clientului'}",
                 "  Skidul poate fi mai mare decât evacuarea (limitat prin EMS), dar nu peste puterea max. admisă.",
             ]

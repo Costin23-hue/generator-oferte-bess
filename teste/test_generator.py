@@ -643,6 +643,24 @@ class CitireATR(unittest.TestCase):
         self.assertIn("ATR de consumator", av)
         self.assertNotIn("Nu am găsit puterea aprobată", av)
 
+    def test_caiet_de_sarcini(self):
+        text = ("ANEXA 1 - SPECIFICAȚIA TEHNICĂ Element Descriere Denumirea obiectivului de investiții BESS 4,2 MW / "
+                "8,40 MWh, integrat la CEF TEST Beneficiar / Achizitor (Proprietarul) FIRMA TEST S.R.L. Amplasament "
+                "Zona de Sud a localității X, județul Olt, teren de 1 ha. Notă: puterea maximă aprobată pentru "
+                "evacuare/absorbție în/din rețea: 3,9 MW, conform ATR nr. 0015001/29.01.2026 "
+                "(ii) putere totală instalată în curent alternativ de minimum 4.200 kW "
+                "(i) putere totală instalată a transformatoarelor de minimum 4.400 kVA "
+                "(i) arhitectură obligatorie de tip „string” la Punctul de conexiuni de 20 kV existent "
+                + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["tip"], r["beneficiar"], r["nr"]), ("Caiet de sarcini", "FIRMA TEST S.R.L.", "0015001"))
+        self.assertEqual((r["mw_min"], r["evac_kw"], r["mw"], r["mwh"], r["poc_kv"]), (4.2, 3900, 3.9, 8.4, 20))
+        self.assertEqual(r["trafo_min_kva"], 4400)
+        av = " ".join(r["avertismente"])
+        self.assertIn("minimum 4,2 MW", av)
+        self.assertIn("STRING", av)
+        self.assertNotIn("nu pare a fi un ATR", av)
+
     def test_studiu_de_solutie(self):
         text = ("Actualizare Studiu de solutie privind Racordarea la SEN avand avizul tehnic de racordare nr. 18189 "
                 "din 12.12.2024 Rețele Electrice Dobrogea. punctul de racord se stabiliteste la bara de 20 kV din statie. "
