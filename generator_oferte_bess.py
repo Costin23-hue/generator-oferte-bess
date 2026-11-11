@@ -1071,6 +1071,7 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
     pc["_cheie"] = pc[df_pcs.columns[0]].map(cheie)
     pc["_putere"] = [numar(p.get("PCS power")) * numar(p.get("no / frame")) for _, p in pc.iterrows()]
     pcs_dupa_nume = {p["_cheie"]: p for _, p in pc.iterrows()}
+    chei_pricing = set(sk["_cheie"])
 
     def rand_pcs(s):
         """Rândul din PCS după nume; dacă numele nu există acolo (ex. modele noi Kehua 'BCS...'),
@@ -1080,6 +1081,11 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
         cod = s["_cheie"].split(" ")[0]          # 'ses4h-5000-ex-mv 10kv sf6 switchgear' -> 'ses4h-5000-ex-mv'
         if cod in pcs_dupa_nume:
             return pcs_dupa_nume[cod], ""
+        # același skid cu sufix în PCS: 'kehua 2.5mw mv station - sf6free' -> '... +100 aux trafo' (dacă în Pricing
+        # nu există și varianta cu sufix, ar fi altă linie) -> legătură exactă, deci se ia și trafo-ul aux din PCS
+        lungi = [k for k in pcs_dupa_nume if k.startswith(s["_cheie"] + " ") and k not in chei_pricing]
+        if len(lungi) == 1:
+            return pcs_dupa_nume[lungi[0]], ""
         brand_s = str(s.get(c_brand, "")).strip().lower()
         putere_s = numar(s.get(c_putere))
         for _, p in pc.iterrows():

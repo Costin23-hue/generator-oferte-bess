@@ -23,6 +23,7 @@ except ImportError:                       # pe serverele fără interfață graf
 
 import generator_oferte_bess as g          # noqa: E402
 from date_test import date_test, intrari_test   # noqa: E402
+import date_test as date_test_mod   # noqa: E402
 
 JINKO_2H = "JKE-5015K-2H-LAA"
 REPT = "REPT 5,015"
@@ -138,6 +139,16 @@ class TrafoAux(unittest.TestCase):
         o = self.skid("Kehua")                               # 4 x 55 + 2 x 40 = 300 kVA, skidul nu are aux
         self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (300, 0, 300))
         self.assertEqual(o["trafo"]["kva"] * o["trafo"]["cant"], 450)
+
+    def test_nume_pcs_cu_sufix_aux(self):
+        # Pricing: 'Kehua 2.5MW MV Station'; PCS: 'Kehua 2.5MW MV Station +100 aux trafo' (100 kVA) -> se ia 100
+        self.date["skid"].loc[len(self.date["skid"])] = date_test_mod._skid("Huawei", "Huawei 2.5MW MV Station", 2.5,
+                                                                             100000, 5000, 4000)
+        self.date["pcs"].loc[len(self.date["pcs"])] = ["Huawei 2.5MW MV Station +100 aux trafo", 1.25, 2, 2.5, 2, 4, 4,
+                                                       100]
+        o = self.skid("Huawei", mwh=5, mw=2.5)
+        self.assertEqual((o["aux_skid"], o["kva_acoperit"]), (100, 100))
+        self.assertFalse(o.get("similar"))
 
     def test_trafo_in_skid_acopera_tot_sistemul(self):
         o = self.skid("Sinexcel")                            # 2 skiduri x 400 kVA >= 300 kVA
