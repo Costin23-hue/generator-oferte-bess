@@ -643,6 +643,33 @@ class CitireATR(unittest.TestCase):
         self.assertIn("ATR de consumator", av)
         self.assertNotIn("Nu am găsit puterea aprobată", av)
 
+    def test_format_oltenia(self):
+        antet = "ATR pentru producatori ATR nr. 001500099999 / 07.07.2026\n"
+        text = ("Distributie Energie Oltenia\nAVIZ TEHNIC DE RACORDARE\nClient: FIRMA TEST SRL\n" + antet +
+                "Ca urmare a cererii ce aparţine utilizatorului FIRMA TEST SRL/ ----------, cu sediul in X\n"
+                "Nr.crt. Tip IS* Pi IS (kW) Pmax evac IS\n(kW)\nPmax abs IS (kW) Capacitate (Ah)\nObs\n1 2 3 4 5 6 7\n"
+                "1  LUNA2000-4,5MWH-\n2H1\n9000,00 4000,00 0,00 54000,00\n" + antet +
+                "Tabelul 2\nNr.crt. Nr. de elemente\n1 2 3 4 5 6 7 8 9\n1 4 2250,00 13440,00 1278,00 0,00 1278,00\n"
+                "documentul nr. 19304/25.06.2026\n2. Puterea aprobată:\nEtapa finală 31.12.2030\n"
+                "Puterea maxima ce poate fi absorbita***\nkVA 0,000 0,000 177,778\nkW 0,000 0,000 160,000\n"
+                "Puterea maxima simultana ce poate fi\nevacuata fara realizarea lucrarilor de\nintarire****\n"
+                "kVA 0,000 0,000 4444,444\nkW 0,000 0,000 4000,000\n" + antet +
+                "3. Descrierea succintă a soluţiei\na) Punctul de racordare este stabilit la nivelul de tensiune "
+                "0/20000/0 V, la stalpul 1\n" + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["operator"], r["nr"], r["data"]), ("Distribuție Energie Oltenia", "001500099999", "07.07.2026"))
+        self.assertEqual((r["beneficiar"], r["poc_kv"]), ("FIRMA TEST SRL", 20))
+        self.assertEqual((r["evac_kw"], r["abs_kw"], r["evac_is_kw"]), (4000, 160, 4000))
+        self.assertEqual((r["nr_elemente"], r["mwh"]), (4, 18))          # 4 x LUNA2000-4,5MWH
+        self.assertIn("lipsește rândul „evacuată”", " ".join(r["avertismente"]))
+
+    def test_aviz_de_amplasament(self):
+        text = ("RETELE ELECTRICE ROMANIA S.A.\nAVIZ DE AMPLASAMENT FAVORABIL\nAvizul de amplasament nu constituie aviz "
+                "tehnic de racordare. veti solicita aviz tehnic de racordare\n" + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual(r["tip"], "Aviz de amplasament")
+        self.assertIn("nu un ATR", " ".join(r["avertismente"]))
+
     def test_caiet_de_sarcini(self):
         text = ("ANEXA 1 - SPECIFICAȚIA TEHNICĂ Element Descriere Denumirea obiectivului de investiții BESS 4,2 MW / "
                 "8,40 MWh, integrat la CEF TEST Beneficiar / Achizitor (Proprietarul) FIRMA TEST S.R.L. Amplasament "

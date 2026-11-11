@@ -3182,26 +3182,39 @@ def citeste_atr_text(text):
         return r
     plat = re.sub(r"\s+", " ", text)
 
-    r["tip"] = ("Aviz tehnic de racordare" if re.search(r"AVIZ\s+TEHNIC\s+DE\s+RACORDARE", text, re.I)
+    r["tip"] = ("Aviz de amplasament" if re.search(r"AVIZ\s+DE\s+AMPLASAMENT", plat[:3000], re.I)
+                else "Aviz tehnic de racordare" if re.search(r"AVIZ\s+TEHNIC\s+DE\s+RACORDARE", text, re.I)
                 else "Studiu de soluție" if re.search(r"studiu\w*\s+de\s+solu", plat, re.I)
                 else "Caiet de sarcini" if re.search(r"SPECIFICA[ȚŢT]IA\s+TEHNIC|Technical\s+Specification|"
                                                      r"caiet\w*\s+de\s+sarcini", plat, re.I)
                 else "Schemă de stație" if re.search(r"Schema\s+normal", plat, re.I) else "document")
+    if r["tip"] == "Aviz de amplasament":
+        av.append("E un aviz de amplasament, nu un ATR: nu conține puterea aprobată. Puterea și capacitatea "
+                  "se iau din cererea clientului (ATR-ul se cere ulterior).")
+        r["obiectiv"] = _cauta(r"pentru\s+obiectivul\s+[\d/ ]*(CONSTRUIRE.{3,150}?)\s+cu\s+destina", plat)
+        return r
     if r["tip"] in ("Schemă de stație", "document"):
         av.append("Documentul nu pare a fi un ATR sau un studiu de soluție"
                   + (" (e schema normală a unei stații)" if r["tip"] == "Schemă de stație" else "")
                   + ": valorile de mai jos pot lipsi sau nu se aplică.")
     if r["tip"] == "Caiet de sarcini":
         _citeste_caiet_sarcini(plat, r)
+    gasiti = []                                   # operatorul = cel pomenit primul (antetul documentului)
     for nume, cuvant in (("Distribuție Energie Electrică Romania (Electrica)", r"Distribu\w+ Energie Electric"),
                          ("E-Distribuție", r"e-distribu"), ("Delgaz Grid", r"Delgaz"),
-                         ("Rețele Electrice", r"Re[țt]ele Electrice"), ("Distribuție Oltenia", r"Distribu\w+ Oltenia"),
+                         ("Rețele Electrice", r"Re[țt]ele Electrice\s+Rom|RETELE ELECTRICE|Re[țt]ele Electrice (?:Muntenia|"
+                                              r"Dobrogea|Banat|Rom[aâ]nia)"),
+                         ("Distribuție Energie Oltenia", r"Distribu\w+\s+(?:Energie\s+)?Oltenia"),
                          ("Transelectrica", r"Transelectrica")):
-        if re.search(cuvant, original, re.I):
-            r["operator"] = nume
-            break
+        m = re.search(cuvant, original, re.I if nume != "Rețele Electrice" else 0)
+        if m:
+            gasiti.append((m.start(), nume))
+    if gasiti:
+        r["operator"] = min(gasiti)[1]
     data_re = r"(\d{2}[./]\d{2}[./]\d{4})"
-    m = re.search(r"nr\.?\s*(\d{4,})\s*/\s*(?:data\s*)?" + data_re, plat, re.I) or \
+    antet = [m for m in re.finditer(r"\bATR\s+nr\.?\s*(\d{4,})\s*/\s*" + data_re, original, re.I)
+             if len(re.findall(r"\bATR\s+nr\.?\s*" + m.group(1), original, re.I)) >= 2]   # antet pe fiecare pagină
+    m = (antet[0] if antet else None) or re.search(r"nr\.?\s*(\d{4,})\s*/\s*(?:data\s*)?" + data_re, plat, re.I) or \
         re.search(r"racordare\s+nr\.?\s*(\d{4,})\s+din\s+(?:data\s+)?" + data_re, plat, re.I) or \
         re.search(r"racordare\s+nr\s+din\s+(?:data\s+)?(\d{4,})\s+" + data_re, plat, re.I)  # câmpuri mutate la final
     if r["tip"] == "Caiet de sarcini":
@@ -3218,6 +3231,8 @@ def citeste_atr_text(text):
         zona = _cauta(r"utilizatorului(.{0,250})", plat) or ""
         r["beneficiar"] = _cauta(r"((?:S\.?C\.?\s+)?[A-ZĂÂÎȘȚŞŢ][A-ZĂÂÎȘȚŞŢ0-9 .&-]{2,60}?\s(?:S\.?R\.?L\.?|S\.?A\.?))(?![A-Z])",
                                  zona, re.S)
+    if r["beneficiar"]:
+        r["beneficiar"] = re.sub(r"\s*/\s*-+\s*$", "", r["beneficiar"]).strip()
     r["obiectiv"] = r.get("obiectiv") or \
         _cauta(r"adresat[ăa] de .{0,120}?,\s+pentru\s+(.{0,200}?)\s+ce\s+a?par[țţt]ine", plat) or \
         _cauta(r"se\s+aprob\w*\s+racordarea.{0,90}?(?:consum\s+[sș]i\s+de\s+producere|producere|consum)\s+(?:permanent/temporar\s+)?"
@@ -3237,6 +3252,12 @@ def citeste_atr_text(text):
                 r"(?:nivelul\s+de\s+tensiune\s+(?:de\s+)?|bara\s+de\s+|tensiunea\s+de\s+)?(\d+(?:[,.]\d+)?)\s*kV", plat)
     kv = kv or _cauta(r"punct\w*\s+de\s+racord\w*\s+este\s+stabilit\s+la\s+nivelul\s+de\s+tensiune\s+kV,\s*la\s*,?\s*"
                       r"(\d+(?:[,.]\d+)?)\s", plat)          # valoarea mutată după 'kV, la ,'
+    v = _cauta(r"punct\w*\s+de\s+racord\w*\s+este\s+stabilit\s+la\s+nivelul\s+de\s+tensiune\s*:?\s*(\d[\d/ ]*?)\s*V\b",
+               plat, re.I)                            # Oltenia: '110000/0/0 V', '0/20000/0 V'
+    if v and not kv:
+        volti = max(int(x) for x in re.findall(r"\d+", v))
+        if volti >= 1000:
+            kv = f"{volti / 1000:g}"
     kv = kv or _cauta(r"punct\w*\s+de\s+(?:conexiun\w*|racord\w*)\s+(?:existent\s+)?de\s+(\d+(?:[,.]\d+)?)\s*kV", plat)
     if kv:
         r["poc_kv"] = _nr_ro(kv)
@@ -3248,23 +3269,24 @@ def citeste_atr_text(text):
         re.search(r"Puterea\s+aprobat\w*\s*:\s*1\.(.+?)2\.\s*Descrierea", text, re.I | re.S) or \
         re.search(r"2\.\s*Puterea\s+aprobat\w*(.{0,3000})", text, re.I | re.S)
     if sec:
-        corp = sec.group(1)
-        model_rand = r"\((kW|kVA)\)((?:\s+(?:" + _NR + r"|-))+)"
+        corp = re.sub(r"\)\s*_+(?=\s)", ")", sec.group(1))        # Transelectrica: '(kW) _     139.565,73'
+        model_rand = r"(?:\((kW|kV ?A)\)|(?<![\w(])(kW|kVA)(?=\s+[\d-]))((?:\s+(?:" + _NR + r"|-))+)"
         randuri = list(re.finditer(model_rand, corp))
         # etichetele se caută pe textul fără rândurile de valori (uneori un rând taie eticheta în două)
         fara_valori = re.sub(model_rand, lambda m: " " * len(m.group(0)), corp)
         etichete = [(m.start(), m.end(), re.sub(r"\s+", " ", m.group(0)).lower()) for m in re.finditer(
-            r"Puterea\s+maxim\w*\s+simultan\w*\s+ce\s+poate\s+fi\s+(?:evacuat\w*(?:\s+f[aă]r[aă]\s+realiz\w*|"
+            r"Puterea\s+maxim\w*\s+(?:simultan\w*\s+)?ce\s+poate\s+fi\s+(?:evacuat\w*(?:\s+f[aă]r[aă]\s+realiz\w*|"
             r"\s+[îi]n\s+situa\w*)?|absorbit\w*)", fara_valori, re.I)]
         # Un rând (kVA) ține de eticheta dinaintea lui. Un rând (kW) lipit de eticheta următoare ('4100,000Puterea...',
         # cum iese din unele PDF-uri Electrica) ține de aceea; altfel tot de eticheta dinaintea lui.
         for m in randuri:
-            valori = re.findall(_NR, m.group(2))
+            unitate = (m.group(1) or m.group(2)).replace(" ", "")
+            valori = re.findall(_NR, m.group(3))
             if not valori or not etichete:
                 continue
             urmatoare = [e for e in etichete if e[0] == m.end()]
             inainte = [e for e in etichete if e[0] <= m.start()]
-            if m.group(1) == "kW" and urmatoare:
+            if unitate == "kW" and urmatoare:
                 eticheta = urmatoare[0][2]
             elif inainte:
                 eticheta = inainte[-1][2]
@@ -3279,7 +3301,15 @@ def citeste_atr_text(text):
                 tip = "evac_limitare"
             else:
                 tip = "evac"
-            r.setdefault(f"{tip}_{m.group(1).lower()}", valoare)
+            r.setdefault(f"{tip}_{unitate.lower()}", valoare)
+    if "evac_kw" not in r:          # Oltenia: uneori lipsește rândul principal; rămân 'fără întărire' / 'limitare'
+        for tip in ("evac_fara_intarire", "evac_limitare"):
+            if r.get(f"{tip}_kw"):
+                r["evac_kw"], r["evac_kva"] = r[f"{tip}_kw"], r.get(f"{tip}_kva")
+                av.append("În tabelul puterii aprobate lipsește rândul „evacuată”: am luat valoarea de la „"
+                          + ("fără realizarea lucrărilor de întărire" if tip == "evac_fara_intarire"
+                             else "situații de limitare operațională") + "”. Verifică.")
+                break
     # Studiu de soluție: tabelul normei tehnice (MW)
     for cheie, eticheta in (("pi_is_kw", "Puterea activă instalată totală"),
                             ("evac_kw", "Puterea activă maximă evacuată"),
@@ -3316,6 +3346,8 @@ def citeste_atr_text(text):
             valori = [_nr_ro(m.group()) for m in sir]
             while len(valori) > 4 and valori[0] == int(valori[0]) and valori[0] < 20:
                 valori.pop(0)
+            if len(valori) > 4 and 0 < valori[0] < valori[1] / 100:   # rest din numele tipului ('ProeM -372')
+                valori.pop(0)
             if len(valori) < 4 or all(v == int(v) and v < 20 for v in valori):
                 continue
             r["pi_is_kw"], r["evac_is_kw"], r["abs_is_kw"], r["capacitate_ah"] = valori[:4]
@@ -3338,8 +3370,12 @@ def citeste_atr_text(text):
         bucati = re.findall(r"(" + _NR + r")\s*MW\s*/\s*(" + _NR + r")\s*MWh\s+racord", plat, re.I)
         if len(bucati) > 1:
             r["mwh"] = sum(_nr_ro(b[1]) for b in bucati)
-    if "mwh" not in r:
-        v = _cauta(r"(" + _NR + r")\s*MWh", plat)
+    if "mwh" not in r:                               # ex. 'Capacitate de stocare de 10.000,00 kWh'
+        m = re.search(r"Capacitat\w*\s+(?:de\s+)?stocare\s+de\s+(" + _NR + r")\s*(kWh|MWh)", plat, re.I)
+        if m:
+            r["mwh"] = _nr_ro(m.group(1)) / (1000 if m.group(2).lower() == "kwh" else 1)
+    if "mwh" not in r:                               # nu din coduri de produs ('LUNA2000-4,5MWH')
+        v = _cauta(r"(?<![-\w.,])(" + _NR + r")\s*MWh", plat)
         if v:
             r["mwh"] = _nr_ro(v)
 
@@ -3382,8 +3418,10 @@ def citeste_atr_text(text):
         r["mw"] = evac / 1000
     pi = r.get("pi_is_kw")
     if pi and evac and pi > 2.5 * evac:
-        av.append(f"Pi stocare din tabel ({nr_eu(pi)} kW) e de peste 2,5 ori evacuarea: pare trecută capacitatea "
-                  "(kWh) în coloana de kW. Nu am folosit-o ca limită.")
+        el = re.search(r"Tabelul\s*2.{0,600}?1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\s+1\s+(\d+)\s+(" + _NR + ")", plat, re.I)
+        detalii = (f" (în tabelul 2: {el.group(1)} elemente x {el.group(2)} kW)" if el else "")
+        av.append(f"Pi stocare din tabel ({nr_eu(pi)} kW) e de peste 2,5 ori evacuarea{detalii}: pare trecută "
+                  "capacitatea (kWh) în coloana de kW. Nu am folosit-o ca limită.")
         pi = None
     if pi and r.get("pi_text_kw") and abs(pi - r["pi_text_kw"]) > 1:
         av.append(f"Pi stocare diferă: {nr_eu(pi)} kW în tabel, {nr_eu(r['pi_text_kw'])} kW în text. "
@@ -3415,6 +3453,17 @@ def citeste_atr_text(text):
         sec_kv = [rap for k, rap in r["trafo_kva"] if rap.startswith(str(int(r["poc_kv"])))]
         av.append(f"POC la {r['poc_kv']:g} kV: skidurile se leagă pe tensiunea medie a stației clientului"
                   + (f" ({sec_kv[0]})" if sec_kv else "") + ". Alege POC-ul skidului în ofertă.")
+    # tabelul 2: nr. de elemente de stocare și Pi / element (rândul de după numerotarea coloanelor 1..9)
+    m = re.search(r"Tabelul\s*2.{0,600}?1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\s+1\s+(\d+)\s+(" + _NR + ")", plat, re.I)
+    if m and int(m.group(1)) > 0:
+        r["nr_elemente"], r["pi_element_kw"] = int(m.group(1)), _nr_ro(m.group(2))
+        cod = re.search(r"Tip\s+IS.{0,300}?(\d+(?:[,.]\d+)?)\s*MWH", plat, re.I)    # ex. LUNA2000-4,5MWH-2H1
+        if cod and "mwh_baterii" not in r:
+            r["mwh_baterii"] = round(r["nr_elemente"] * _nr_ro(cod.group(1)), 3)
+            if not r.get("mwh"):
+                r["mwh"] = r["mwh_baterii"]
+                av.append(f"Capacitatea calculată din tabel: {r['nr_elemente']} elemente x "
+                          f"{nr_eu(_nr_ro(cod.group(1)))} MWh = {nr_eu(r['mwh'])} MWh. Verifică.")
     # bateriile din tabel: '3 x "Suntera JKE-5015K-2H" cu doar 10 rack-uri ... --> JKE4180K' -> 3 x 4,18 MWh
     m = re.search(r"(\d+)\s*x\s*\"?\s*(?:Suntera\s+)?JKE-?(\d{4})K", plat, re.I)
     if m:

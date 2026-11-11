@@ -32,7 +32,10 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
 - Citește: operator, nr./data, beneficiar, POC kV, putere aprobată (evacuare/absorbție, kW/kVA), tabelul stocării
   (Pi IS, Pmax evac/abs IS, Ah, MWh), cuplare DC, legare pe JT (TDRI), fără absorbție, trafo-uri, ATR fără stocare.
 - Formate testate: Electrica 2023 și 2026 (pypdf lipește valorile kW de eticheta următoare), avize CTE de studiu de
-  soluție, Rețele Electrice (kVA înaintea kW, „-” pentru etape goale), studiu de soluție (tabel normă tehnică MW).
+  soluție, Rețele Electrice (kVA înaintea kW, „-” pentru etape goale; consumator; tabel stocare în MW), studiu de
+  soluție (tabel normă tehnică MW), Distribuție Energie Oltenia (antet „ATR nr. X / data” pe fiecare pagină, unități
+  fără paranteze, POC „0/20000/0 V”, uneori lipsește rândul „evacuată”), Transelectrica (draft), E-Distribuție,
+  caiet de sarcini (putere min. instalată, string), aviz de amplasament (nu e ATR).
 - Scanate (fără text) -> doar avertisment (fără OCR deocamdată). Lipsesc exemple E-Distribuție și Delgaz în format text.
 - Regula utilizatorului: puterea skidului poate depăși evacuarea (limitare EMS), dar nu trafo-urile din parc / Pi stocare.
 
