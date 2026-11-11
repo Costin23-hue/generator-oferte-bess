@@ -162,12 +162,15 @@ INTRARI_FARA_PCS = {"TBEA": (12, 24)}
 PUTERE_NOMINALA_SKID = ("TBEA",)
 
 # Consum auxiliar / baterie, după capacitatea bateriei: (de la MWh, kVA), crescător.
-# 5 MWh (Jinko, REPT) -> 55 kVA (technical proposal Jinko: "55 kVA per battery container"); 6,25 MWh -> 65 kVA.
+# 5 MWh (Jinko, REPT) -> ~50 kVA (informație nouă, 11.2026; înainte 55); 6,25 MWh -> 65 kVA.
 # Tabelul se scrie și în Excelul de calcul (A24:B25).
-KVA_AUX_PER_BATERIE = [(0, 55), (5.6, 65)]
+KVA_AUX_PER_BATERIE = [(0, 50), (5.6, 65)]
 # Consumul auxiliar propriu al unui skid (PCS + MV skid), kVA, după puterea skidului: (până la MW, kVA), crescător.
 # Valori acoperitoare (cele mai mari), pentru orice skid. Între trepte: treapta următoare; peste ultima: proporțional.
 KVA_CONSUM_SKID = [(2, 30), (5, 40), (7.5, 50), (10, 60)]
+# Skidul are trafo propriu, separat, pentru consumul lui (altul decât trafo-ul aux din numele lui, care rămâne pentru
+# baterii) -> consumul skidului NU intră în necesarul aux. True = se adună iar (regula veche).
+CONSUM_SKID_IN_NECESAR = False
 # Trafo aux inclus în skid (kVA): coloana cu acest nume din 'PCS - MV skid.xlsx'; dacă lipsește, din numele
 # skidului ('... + AUX TRAFO 200kVA'); altfel skidul e considerat fără aux.
 # Necesar = baterii x kVA/baterie + skiduri x consum aux skid; ce nu acoperă skidurile se acoperă automat cu
@@ -278,6 +281,8 @@ SETARI_EDITABILE = [
     ("Skiduri și compatibilitate", None, None),
     ("PCS_PE_BATERIE", "Câte PCS poate alimenta o baterie (ex. 1, 2)", "lista_intregi"),
     ("KVA_CONSUM_SKID", "Consum aux propriu / skid (până la MW = kVA)", "trepte"),
+    ("CONSUM_SKID_IN_NECESAR", "Consumul skidului intră în necesarul aux (NU = skidul are trafo propriu separat)",
+     "da_nu"),
     ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),
     ("TRAFO_CAT_MAI_PUTINE", "Trafo aux: cât mai puține bucăți (DA) sau cel mai ieftin (NU)", "da_nu"),
     ("POC_IMPLICIT_KV", "POC România (kV) = foaia 'MV SKID'", "numar"),
@@ -1297,7 +1302,7 @@ def consum_aux_skid(putere_mw):
 def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing):
     """Completează opțiunea de skid cu necesarul aux, ce acoperă skidul, trafo-ul extern și costul total."""
     o["aux_skid"] = aux_skid
-    o["kva_skid"] = consum_aux_skid(o["putere_unit"])
+    o["kva_skid"] = consum_aux_skid(o["putere_unit"]) if CONSUM_SKID_IN_NECESAR else 0.0
     o["kva_baterii"] = nr_baterii * kva_baterie
     o["kva_necesar"] = o["kva_baterii"] + o["nr"] * o["kva_skid"]
     o["kva_acoperit"] = o["nr"] * aux_skid
@@ -1316,8 +1321,9 @@ def calcul_aux(o, aux_skid, nr_baterii, kva_baterie, forteaza_trafo, trafo_prici
 
 def text_aux(o):
     """'aux: necesar 250 kVA (4 baterii + 1 skid), skid acoperă 200 kVA -> trafo extern: 1 x 400 KVA ... = 30.000 $'."""
-    text = (f"aux: necesar {o['kva_necesar']:g} kVA (baterii {o['kva_baterii']:g} + skid {o['nr']} x "
-            f"{o['kva_skid']:g} kVA), "
+    text = (f"aux: necesar {o['kva_necesar']:g} kVA (baterii {o['kva_baterii']:g}"
+            + (f" + skid {o['nr']} x {o['kva_skid']:g} kVA), " if o["kva_skid"] else
+               "; skidul are trafo propriu pentru consumul lui), ")
             + (f"skidul acoperă {o['kva_acoperit']:g} kVA" if o["kva_acoperit"] else "skid fără trafo aux") + " -> ")
     if o.get("fara_trafo"):
         text += ("fără trafo extern (exclus manual" +
@@ -1567,7 +1573,8 @@ def completeaza_calcul(foaie, intrari, baterie, nr_baterii, skid, trafo, acum, b
     foaie.scrie("B17:B18", [[1 if trafo else 0], [baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])]])
     foaie.scrie("A19:B19", [["kVA de acoperit cu trafo extern", skid.get("kva_trafo", 0)]])
     foaie.scrie("D17:E20", [["Necesar aux total (kVA)", skid.get("kva_necesar", 0)],
-                            ["  din care consum skiduri (kVA)", skid["nr"] * skid.get("kva_skid", 0)],
+                            ["  din care consum skiduri (kVA)" if CONSUM_SKID_IN_NECESAR else
+                             "  consum skiduri: trafo propriu separat", skid["nr"] * skid.get("kva_skid", 0)],
                             ["Acoperit de trafo aux din skid (kVA)", skid.get("kva_acoperit", 0)],
                             ["Trafo aux inclus / skid (kVA)", skid.get("aux_skid", 0)]])
     foaie.scrie(f"A24:B{23 + len(KVA_AUX_PER_BATERIE)}", [[prag, kva] for prag, kva in KVA_AUX_PER_BATERIE])
@@ -4928,8 +4935,9 @@ class AplicatieOferte:
                   f"{baterie['pret']:,.2f} $/MWh (cotație {baterie['data']}, "
                   f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"))
         kva_bat = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
-        txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA + "
-                "consum skid după putere (vezi la fiecare skid); "
+        txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA"
+                + (" + consum skid după putere (vezi la fiecare skid); " if CONSUM_SKID_IN_NECESAR else
+                   " (skidul are trafo propriu pentru consumul lui); ")
                 + {"fara": "trafo aux extern EXCLUS (bifa „Fără trafo aux extern”)",
                    True: "trafo aux extern forțat la toate opțiunile"}.get(
                     self._mod_trafo(), "trafo-ul aux extern se adaugă automat unde skidul nu acoperă"))

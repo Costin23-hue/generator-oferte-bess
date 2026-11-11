@@ -15,7 +15,9 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
 ## Reguli de ofertare implementate
 - Baterii în listă: toate Jinko „2H-” (inclusiv variantele cu rack-uri scoase) + REPT; REPT = 4 ore; „Auto” = cea mai ieftină.
 - PCS pe baterie 1:1 sau 1:2; REPT pe TBEA (rack) sau Kehua (dc); TBEA doar la POC 20 kV.
-- Consum aux skid (acoperitor): 2/5/7,5/10 MW -> 30/40/50/60 kVA; baterie 55 kVA (<5,6 MWh) / 65 kVA.
+- Consum aux: doar bateriile, 50 kVA (<5,6 MWh) / 65 kVA. Skidul are trafo propriu separat pentru consumul lui
+  (CONSUM_SKID_IN_NECESAR = NU; tabelul KVA_CONSUM_SKID 30/40/50/60 kVA rămâne pentru DA). Trafo-ul aux din numele
+  skidului acoperă bateriile.
 - Trafo aux extern: cât mai puține bucăți (1 x 1250 în loc de 3 x 450), apoi cel mai ieftin; trafo aux inclus în skid se scade.
 - EMS după capacitatea OFERTATĂ (prag 15 MWh: 3500 / 6500 USD), nu cea cerută.
 - Limitare prin EMS: skidul poate fi peste evacuarea aprobată, în prezentare „6 (limited by EMS to 5,85)”.

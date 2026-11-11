@@ -51,8 +51,8 @@ class Oferte(unittest.TestCase):
         o = p["lista"][0]
         self.assertEqual(p["nr_baterii"], 4)
         self.assertEqual((o["tip"], o["nr"]), ("BCS5000K-B-HUD MV", 2))
-        # aux: 4 baterii x 55 + 2 skiduri x 40 kVA (5 MW, neconfirmat) = 300 kVA -> 1 trafo de 450 kVA
-        self.assertEqual(o["trafo"]["kva_total"], 300)
+        # aux: 4 baterii x 50 kVA = 200 kVA (skidul are trafo propriu) -> 1 trafo de 450 kVA
+        self.assertEqual(o["trafo"]["kva_total"], 200)
         self.assertEqual((o["trafo"]["kva"], o["trafo"]["cant"]), (450, 1))
 
     def test_kehua_7500_3_baterii(self):
@@ -137,8 +137,9 @@ class TrafoAux(unittest.TestCase):
                          [30, 30, 40, 40, 50, 60, 75])
 
     def test_fara_trafo_in_skid(self):
-        o = self.skid("Kehua")                               # 4 x 55 + 2 x 40 = 300 kVA, skidul nu are aux
-        self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (300, 0, 300))
+        o = self.skid("Kehua")                               # 4 x 50 = 200 kVA, skidul nu are aux
+        self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (200, 0, 200))
+        self.assertIn("trafo propriu", g.text_aux(o))
         self.assertEqual(o["trafo"]["kva"] * o["trafo"]["cant"], 450)
 
     def test_nume_pcs_cu_sufix_aux(self):
@@ -152,17 +153,32 @@ class TrafoAux(unittest.TestCase):
         self.assertFalse(o.get("similar"))
 
     def test_trafo_in_skid_acopera_tot_sistemul(self):
-        o = self.skid("Sinexcel")                            # 2 skiduri x 400 kVA >= 300 kVA
-        self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (300, 800, 0))
+        o = self.skid("Sinexcel")                            # 2 skiduri x 400 kVA >= 200 kVA
+        self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (200, 800, 0))
         self.assertIsNone(o["trafo"])
         self.assertEqual(o["cost_total"], o["pret_total"])  # fără cost de trafo
 
     def test_trafo_in_skid_nu_ajunge(self):
-        # TBEA: 1 skid cu 200 kVA; 4 baterii REPT x 55 + 60 kVA (10 MW) = 280 -> lipsesc 80 kVA
+        # TBEA: 1 skid cu 200 kVA; 4 baterii REPT x 50 = 200 -> acoperit exact; cu 65 kVA / baterie lipsesc 60
         o = self.skid("TBEA", baterie=REPT)
-        self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_lipsa"]), (280, 200, 80))
-        self.assertEqual(o["kva_trafo"], 80)
-        self.assertEqual(o["trafo"]["kva"], 450)
+        self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_lipsa"]), (200, 200, 0))
+        self.assertIsNone(o["trafo"])
+        vechi = g.KVA_AUX_PER_BATERIE
+        g.KVA_AUX_PER_BATERIE = [(0, 65)]
+        try:
+            o = self.skid("TBEA", baterie=REPT)
+            self.assertEqual((o["kva_necesar"], o["kva_lipsa"], o["trafo"]["kva"]), (260, 60, 450))
+        finally:
+            g.KVA_AUX_PER_BATERIE = vechi
+
+    def test_regula_veche_cu_consumul_skidului(self):
+        vechi = g.CONSUM_SKID_IN_NECESAR
+        g.CONSUM_SKID_IN_NECESAR = True
+        try:
+            o = self.skid("Kehua")                           # 4 x 50 + 2 skiduri x 40 = 280
+            self.assertEqual(o["kva_necesar"], 280)
+        finally:
+            g.CONSUM_SKID_IN_NECESAR = vechi
 
     def test_un_trafo_mare_in_loc_de_mai_multe_mici(self):
         variante = g.variante_trafo(self.date["aux"])           # 450 kVA = 12.000 $, 1250 kVA = 25.000 $
@@ -185,14 +201,14 @@ class TrafoAux(unittest.TestCase):
 
     def test_trafo_fortat_chiar_daca_skidul_acopera(self):
         o = self.skid("Sinexcel", trafo=True)
-        self.assertEqual(o["kva_trafo"], 300)
+        self.assertEqual(o["kva_trafo"], 200)
         self.assertIsNotNone(o["trafo"])
 
     def test_fara_trafo_extern_bifat(self):
         o = self.skid("Kehua", trafo="fara")
         self.assertIsNone(o["trafo"])
-        self.assertEqual(o["kva_lipsa"], 300)               # rămâne avertismentul cu kVA neacoperiți
-        self.assertIn("neacoperiți 300", g.text_aux(o))
+        self.assertEqual(o["kva_lipsa"], 200)               # rămâne avertismentul cu kVA neacoperiți
+        self.assertIn("neacoperiți 200", g.text_aux(o))
 
     def test_auto_alege_skidul_cu_trafo_inclus_cand_iese_mai_ieftin(self):
         # Kehua 200.000 x 2 + trafo 12.000 = 412.000; Sinexcel 210.000 x 2 fără trafo = 420.000
@@ -202,8 +218,8 @@ class TrafoAux(unittest.TestCase):
 
     def test_skid_manual_7_5_mw(self):
         m = {"brand": "X", "model": "Y", "putere": "7,5", "pret": "100000", "aux_kva": ""}
-        o = g.optiune_skid_manuala(self.date, 15, 3, 55, None, None, m)
-        self.assertEqual(o["kva_necesar"], 3 * 55 + 2 * 50)
+        o = g.optiune_skid_manuala(self.date, 15, 3, 50, None, None, m)
+        self.assertEqual(o["kva_necesar"], 3 * 50)
 
 
 class ComponenteManuale(unittest.TestCase):
