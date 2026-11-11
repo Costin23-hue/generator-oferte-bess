@@ -21,7 +21,10 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
 - Limitare prin EMS: skidul poate fi peste evacuarea aprobată, în prezentare „6 (limited by EMS to 5,85)”.
 - Rezervă de preț (% baterie / skid) în tab-ul Componente manuale; în Excel ca formulă.
 - „Putere max. admisă (MW)”: skidurile peste ea nu se propun (din ATR = Pi stocare).
-- Flux: calcul Excel -> tab „Verificare calcul” -> OK -> PPTX + PDF; „test/test” = calcul de probă, se șterge.
+- Flux: calcul Excel -> tab „Verificare calcul” -> OK -> PPTX + PDF; „test/test” = calcul de probă, se șterge
+  (la OK pe probă: dialog client/proiect/locație/nr. -> se salvează ca ofertă reală, cu Excelul de probă copiat).
+- Versiunea (_vN) crește doar după o prezentare: calculele refăcute înainte de OK stau în folderul aceleiași versiuni
+  (mai multe Excel-uri); la OK folderul se redenumește dacă s-a schimbat MWh / MW.
 - Oferte în Drive pe zile: Oferte generate/AAAA-LL-ZZ/<oferta>.
 - BESS_Proposals: numele proiectului „<Proiect>_BESS, <MWh>MWh, <MW>MW”.
 
