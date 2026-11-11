@@ -332,6 +332,63 @@ class FoldereZile(unittest.TestCase):
         self.assertTrue(g.MODEL_FOLDER_ZI.match("2026-11-06"))
 
 
+class VersiuneDoarLaPrezentare(unittest.TestCase):
+    """Versiunea crește doar după ce s-a făcut prezentarea; calculele refăcute stau în folderul aceleiași versiuni."""
+    PREFIX = "ST1_BESS_Indicative_Proposal_Taliva_P_"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vechi = os.getcwd()
+        os.chdir(self.tmp.name)
+
+    def tearDown(self):
+        os.chdir(self.vechi)
+        self.tmp.cleanup()
+
+    def folder(self, zi, nume, *fisiere):
+        cale = os.path.join(g.FOLDER_OFERTE, zi, self.PREFIX + nume)
+        os.makedirs(cale)
+        for f in fisiere:
+            open(os.path.join(cale, f), "w").close()
+        return cale
+
+    def test_fara_oferte(self):
+        self.assertEqual(g.versiune_de_lucru("ST1", "P"), (1, None))
+
+    def test_doar_calcule_refoloseste_versiunea(self):
+        self.folder("2026-11-05", "20MWh_10MW_v1", "x.pptx")
+        self.folder("2026-11-10", "20MWh_10MW_v2", "Calcul_a.xlsx")
+        self.assertEqual(g.versiune_de_lucru("ST1", "P"), (2, ("2026-11-10", self.PREFIX + "20MWh_10MW_v2")))
+
+    def test_cu_prezentare_versiune_noua(self):
+        self.folder("2026-11-10", "20MWh_10MW_v2", "Calcul_a.xlsx", "oferta.pptx")
+        self.assertEqual(g.versiune_de_lucru("ST1", "P"), (3, None))
+
+    def test_folder_din_drive(self):
+        nume = [self.PREFIX + "20MWh_10MW_v4"]
+        self.assertEqual(g.versiune_de_lucru("ST1", "P", nume, lambda n: ("2026-11-09", False)),
+                         (4, ("2026-11-09", nume[0])))
+        self.assertEqual(g.versiune_de_lucru("ST1", "P", nume, lambda n: ("2026-11-09", True)), (5, None))
+        self.assertEqual(g.versiune_de_lucru("ST1", "P", nume), (5, None))     # fără detalii: versiune nouă
+
+    def test_calcul_nou_in_acelasi_folder_si_redenumire(self):
+        cale = self.folder("2026-11-10", "20MWh_10MW_v2", "Calcul_a.xlsx")
+        intrari = {"client": "C", "proiect": "P", "nr_proiect": "ST1", "mwh": 20, "mw": 8}
+        folder = g.pregateste_folder_oferta(intrari)
+        self.assertEqual((intrari["versiune"], folder), (2, os.path.abspath(cale)))
+        calcul = {"nume": g.nume_oferta(intrari), "folder": folder,
+                  "cale_excel": os.path.join(folder, "Calcul_a.xlsx"), "rez": {}}
+        g.aliniaza_folder(calcul)                    # MW schimbat: folderul ia numele prezentării
+        self.assertTrue(calcul["folder"].endswith(self.PREFIX + "20MWh_8MW_v2"))
+        self.assertTrue(os.path.exists(calcul["cale_excel"]))
+        self.assertFalse(os.path.exists(cale))
+
+    def test_antet_pentru_proba_salvata(self):
+        antet = dict(g.antet_calcul({"client": "GEP", "proiect": "Sinesti", "nr_proiect": "ST9", "versiune": 3}))
+        self.assertEqual(antet["A1:B2"][0][1], "GEP")
+        self.assertEqual(antet["E2:E3"], [["ST9"], ["v3"]])
+
+
 class FoiInSetari(unittest.TestCase):
     """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
 

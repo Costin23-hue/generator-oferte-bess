@@ -1739,8 +1739,7 @@ def urmatoarea_versiune(nr_proiect, proiect, nume_existente=()):
     """Caută ofertele deja generate pentru același nr. proiect + proiect (folderele din FOLDER_OFERTE și,
     pentru ofertele mai vechi, cele de lângă program; nume_existente = folderele din Drive) și returnează
     următoarea versiune (1 dacă nu e niciuna)."""
-    model = re.compile(re.escape(f"{nume_fisier_valid(nr_proiect)}_BESS_Indicative_Proposal_Taliva_"
-                                 f"{nume_fisier_valid(proiect)}_") + r".*_v(\d+)(\.pptx)?$", re.I)
+    model = _model_oferta(nr_proiect, proiect)
     maxim = 0
     foldere = [os.path.join(radacina, f) for radacina in (FOLDER_OFERTE, ".") if os.path.isdir(radacina)
                for f in os.listdir(radacina)]
@@ -1756,6 +1755,54 @@ def urmatoarea_versiune(nr_proiect, proiect, nume_existente=()):
         if m:
             maxim = max(maxim, int(m.group(1)))
     return maxim + 1
+
+
+def _model_oferta(nr_proiect, proiect):
+    return re.compile(re.escape(f"{nume_fisier_valid(nr_proiect)}_BESS_Indicative_Proposal_Taliva_"
+                                f"{nume_fisier_valid(proiect)}_") + r".*_v(\d+)(\.pptx)?$", re.I)
+
+
+def versiune_de_lucru(nr_proiect, proiect, nume_existente=(), info_drive=None):
+    """Versiunea pentru un calcul nou și folderul în care intră. Versiunea crește doar după ce s-a făcut
+    prezentarea: cât timp ultima versiune nu are PPTX (doar calcule), calculele noi intră în același folder.
+    info_drive(nume_folder) -> (zi, are_pptx) sau None (pentru folderele din Drive).
+    Returnează (versiune, (zi, nume_folder) sau None = folder nou în ziua de azi)."""
+    ultima = urmatoarea_versiune(nr_proiect, proiect, nume_existente) - 1
+    if ultima < 1:
+        return 1, None
+    model = _model_oferta(nr_proiect, proiect)
+    potrivite = lambda nume: (m := model.match(nume)) and not m.group(2) and int(m.group(1)) == ultima
+    gasit = None
+    for zi in ([""] + sorted(os.listdir(FOLDER_OFERTE))) if os.path.isdir(FOLDER_OFERTE) else []:
+        baza = os.path.join(FOLDER_OFERTE, zi)
+        if zi and not (os.path.isdir(baza) and (MODEL_FOLDER_ZI.match(zi))):
+            continue
+        for nume in os.listdir(baza):
+            cale = os.path.join(baza, nume)
+            if os.path.isdir(cale) and potrivite(nume):
+                if any(f.lower().endswith(".pptx") for f in os.listdir(cale)):
+                    return ultima + 1, None
+                gasit = gasit or (zi, nume)
+    for nume in nume_existente:
+        if model.match(nume) and model.match(nume).group(2) and int(model.match(nume).group(1)) == ultima:
+            return ultima + 1, None                       # prezentare veche, direct în 'Oferte generate'
+        if potrivite(nume) and info_drive is not None:
+            info = info_drive(nume)
+            if info is None:
+                continue
+            if info[1]:
+                return ultima + 1, None
+            gasit = gasit or (info[0], nume)
+    if gasit is None:                                     # versiunea există doar ca nume (fără folder de verificat)
+        return ultima + 1, None
+    return ultima, gasit
+
+
+def nume_oferta(intrari):
+    """Numele folderului / prezentării / PDF-ului: ST..._BESS_Indicative_Proposal_Taliva_<proiect>_20MWh_10MW_v2."""
+    return NUME_PREZENTARE.format(nr_proiect=nume_fisier_valid(intrari["nr_proiect"]),
+                                  proiect=nume_fisier_valid(intrari["proiect"]),
+                                  mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) + f"_v{intrari['versiune']}"
 
 
 def nume_fisier_valid(text):
@@ -2152,15 +2199,40 @@ class DriveCloud:
 
     def nume_oferte(self):
         """Numele folderelor din 'Ofertare BESS/Oferte generate' (pentru numerotarea versiunilor)."""
+        self._oferte_zi = {}                                            # nume folder ofertă -> zi
         try:
             nume = []
             for c in self._copii(self.ofertare, FOLDER_OFERTE):
                 nume.append(c["name"])
                 if "folder" in c and MODEL_FOLDER_ZI.match(c["name"]):       # ofertele din folderele pe zile
-                    nume += [x["name"] for x in self._copii(self.ofertare, f"{FOLDER_OFERTE}/{c['name']}")]
+                    for x in self._copii(self.ofertare, f"{FOLDER_OFERTE}/{c['name']}"):
+                        nume.append(x["name"])
+                        self._oferte_zi.setdefault(x["name"], c["name"])
             return nume
         except NegasitDrive:
             return []
+
+    def info_oferta(self, nume):
+        """(zi, are_prezentare) pentru folderul unei oferte din 'Oferte generate/<zi>/'; None dacă nu-l găsim."""
+        zi = getattr(self, "_oferte_zi", {}).get(nume)
+        if zi is None:
+            return None
+        try:
+            fisiere = self._copii(self.ofertare, f"{FOLDER_OFERTE}/{zi}/{nume}")
+        except NegasitDrive:
+            return None
+        return zi, any(f["name"].lower().endswith(".pptx") for f in fisiere)
+
+    def redenumeste_oferta(self, zi, vechi, nou):
+        """Redenumește folderul unei oferte din Drive (dacă există)."""
+        drive_id, item_id = self.ofertare
+        cale = f"{FOLDER_OFERTE}/{zi}/{vechi}" if MODEL_FOLDER_ZI.match(zi) else f"{FOLDER_OFERTE}/{vechi}"
+        try:
+            el = self._cerere("GET", f"/drives/{drive_id}/items/{item_id}:/{_cale_url(cale)}")
+        except NegasitDrive:
+            return
+        self._cerere("PATCH", f"/drives/{drive_id}/items/{el['id']}", tip="application/json",
+                     date=json.dumps({"name": nou}).encode())
 
     def organizeaza_oferte_pe_zile(self):
         """Mută ofertele puse direct în 'Oferte generate' (cele vechi sau făcute cu o versiune veche a programului)
@@ -2808,18 +2880,50 @@ def e_calcul_test(intrari):
     return all(str(intrari.get(c, "")).strip().lower() == TEXT_TEST for c in ("client", "proiect"))
 
 
-def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=(),
-                      online=False):
-    """Pasul 1: doar Excelul de calcul, în 'Oferte generate/<nume>_vN'. Prezentarea se face după verificare."""
-    # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2
-    intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"], nume_existente)
-    nume = NUME_PREZENTARE.format(nr_proiect=nume_fisier_valid(intrari["nr_proiect"]),
-                                  proiect=nume_fisier_valid(intrari["proiect"]),
-                                  mwh=nr_eu(intrari["mwh"]), mw=nr_eu(intrari["mw"])) \
-           + f"_v{intrari['versiune']}"
-    zi = FOLDER_TESTE if e_calcul_test(intrari) else datetime.now().strftime(FORMAT_FOLDER_ZI)
-    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, zi, nume))
+def pregateste_folder_oferta(intrari, nume_existente=(), info_drive=None):
+    """Stabilește intrari['versiune'] și creează folderul local al calculului (calculul de probă: în '_teste')."""
+    if e_calcul_test(intrari):
+        intrari["versiune"] = urmatoarea_versiune(intrari["nr_proiect"], intrari["proiect"], nume_existente)
+        zi, nume_folder = FOLDER_TESTE, nume_oferta(intrari)
+    else:
+        intrari["versiune"], existent = versiune_de_lucru(intrari["nr_proiect"], intrari["proiect"],
+                                                          nume_existente, info_drive)
+        zi, nume_folder = existent or (datetime.now().strftime(FORMAT_FOLDER_ZI), nume_oferta(intrari))
+    folder = os.path.abspath(os.path.join(FOLDER_OFERTE, zi, nume_folder))
     os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def aliniaza_folder(calcul):
+    """Folderul unei versiuni refolosite poate avea alt MWh / MW în nume decât oferta finală: îl redenumim
+    (local și în Drive) ca să aibă același nume ca prezentarea."""
+    vechi = calcul["folder"]
+    if os.path.basename(vechi) == calcul["nume"]:
+        return
+    nou = os.path.join(os.path.dirname(vechi), calcul["nume"])
+    if not os.path.exists(nou):
+        os.rename(vechi, nou)
+    else:                                                 # există deja: mutăm fișierele în el
+        for f in os.listdir(vechi):
+            shutil.move(os.path.join(vechi, f), os.path.join(nou, f))
+        shutil.rmtree(vechi, ignore_errors=True)
+    if DRIVE is not None:
+        try:
+            DRIVE.redenumeste_oferta(os.path.basename(os.path.dirname(vechi)), os.path.basename(vechi), calcul["nume"])
+        except Exception:
+            pass
+    calcul["folder"] = nou
+    calcul["cale_excel"] = os.path.join(nou, os.path.basename(calcul["cale_excel"]))
+    calcul["rez"]["cale_excel"] = calcul["cale_excel"]
+
+
+def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, nume_existente=(),
+                      online=False, info_drive=None):
+    """Pasul 1: doar Excelul de calcul, în 'Oferte generate/<nume>_vN'. Prezentarea se face după verificare."""
+    # Folderul, prezentarea și PDF-ul au același nume, ex. ST202606109_BESS_..._20MWh_10MW_v2. Versiunea crește
+    # doar după o prezentare: calculele refăcute înainte de OK stau toate în folderul aceleiași versiuni.
+    folder = pregateste_folder_oferta(intrari, nume_existente, info_drive)
+    nume = nume_oferta(intrari)
 
     status("Calculez în Excel...")
     c_brand_bat = date["bat"].columns[BAT_COL_BRAND]
@@ -2834,8 +2938,61 @@ def calculeaza_oferta(date, intrari, baterie, nr_baterii, skid, trafo, status=la
     return calcul
 
 
+def antet_calcul(intrari):
+    """Celulele cu datele ofertei din Excelul de calcul (aceleași ca în completeaza_calcul)."""
+    return [("A1:B2", [["Client", intrari["client"]], ["Nume Proiect", intrari["proiect"]]]),
+            ("E2:E3", [[intrari["nr_proiect"]], [f"v{intrari['versiune']}"]])]
+
+
+def transforma_calcul_test(calcul, intrari, nume_existente=(), info_drive=None):
+    """Calculul de probă devine ofertă: Excelul de probă (cu modificările tale) se copiază în folderul ofertei, cu
+    clientul / proiectul / nr. proiect / versiunea reale. intrari = intrările ofertei (fără 'test')."""
+    folder = pregateste_folder_oferta(intrari, nume_existente, info_drive)
+    acum = datetime.now()
+    cale = os.path.join(folder, nume_calcul(intrari, acum))
+    rez = dict(calcul["rez"])
+    if calcul.get("online"):
+        id_folder = DRIVE.folder_oferta(folder)
+        DRIVE._descarca(*rez["excel_drive"], cale)          # ultima variantă (poate modificată în browser)
+        fisier = DRIVE.urca_fisier(id_folder, os.path.basename(cale), cale)
+        foaie = FoaieGraph(DRIVE, fisier)
+        for adresa, valori in antet_calcul(intrari):
+            foaie.scrie(adresa, valori)
+        foaie.calculeaza()
+        try:
+            DRIVE._descarca(*fisier, cale)
+        except Exception:
+            pass
+        rez.update(excel_drive=fisier, folder_drive=(fisier[0], id_folder), link_excel=DRIVE.link(fisier))
+    else:
+        if xw is None:
+            raise RuntimeError("Excel nu e instalat (sau lipsește biblioteca xlwings).")
+        shutil.copy2(calcul["cale_excel"], cale)
+        app_xl = xw.App(visible=(sys.platform == "darwin"), add_book=False)
+        wb = None
+        try:
+            wb = app_xl.books.open(cale)
+            foaie = FoaieXlwings(wb.sheets["Sheet1"])
+            for adresa, valori in antet_calcul(intrari):
+                foaie.scrie(adresa, valori)
+            foaie.calculeaza()
+            wb.save()
+        finally:
+            try:
+                if wb is not None:
+                    wb.close()
+                if sys.platform != "darwin" or not app_xl.books:
+                    app_xl.quit()
+            except Exception:
+                pass
+    rez["cale_excel"] = cale
+    return {"nume": nume_oferta(intrari), "folder": folder, "rez": rez, "cale_excel": cale,
+            "online": calcul.get("online")}
+
+
 def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, reciteste=True):
     """Pasul 2 (după OK): prezentarea PPTX + PDF, cu valorile din Excelul de calcul (recitit, dacă l-ai modificat)."""
+    aliniaza_folder(calcul)
     nume, folder, rez = calcul["nume"], calcul["folder"], dict(calcul["rez"])
     if reciteste:
         status("Recitesc Excelul de calcul...")
@@ -3726,8 +3883,8 @@ class AplicatieOferte:
         if c.get("test"):
             self.lbl_verificare.config(foreground="#b35c00", text=(
                 "🧪 CALCUL DE PROBĂ (Client și Proiect = „test”): nu se păstrează nimic în Drive și nimic în "
-                "BESS_Proposals. Se șterge la „Renunță”, la următorul calcul sau la închiderea programului; "
-                "OK face doar un PDF de probă, pe care îl deschide local."))
+                "BESS_Proposals. Se șterge la „Renunță”, la următorul calcul sau la închiderea programului. "
+                "La OK te întreb dacă îl salvezi ca ofertă (client, proiect...) sau faci doar un PDF de probă."))
             return
         self.lbl_verificare.config(foreground="black", text=(
             "Verifică prețurile. Dacă vrei să schimbi ceva, deschide Excelul (se deschide în browser, în Excel Online, "
@@ -3752,8 +3909,8 @@ class AplicatieOferte:
 
     def _renunta_calcul(self):
         c = self._calcul_in_asteptare
-        if not c or not messagebox.askyesno("Renunț", "Renunți la acest calcul? (nu se face PowerPoint / PDF și "
-                                                       "nu se urcă nimic în Drive)"):
+        if not c or not messagebox.askyesno("Renunț", "Renunți la acest calcul? Se șterge Excelul lui (nu se face "
+                                                       "PowerPoint / PDF); calculele anterioare ale versiunii rămân."):
             return
         self._sterge_calcul(c)
         self._calcul_in_asteptare = None
@@ -3764,14 +3921,28 @@ class AplicatieOferte:
         self.taburi.select(0)
 
     def _sterge_calcul(self, c, arata_erori=True):
-        """Șterge un calcul: folderul local și, în modul Microsoft 365, folderul din Drive."""
-        shutil.rmtree(c["calcul"]["folder"], ignore_errors=True)    # dacă Excelul e deschis, rămâne local
-        if c["calcul"]["rez"].get("folder_drive"):                 # mod Microsoft 365: calculul e și în Drive
+        """Șterge un calcul. Proba: tot folderul (local și din Drive). Ofertă: doar Excelul acestui calcul; folderul
+        versiunii se șterge doar dacă a rămas gol (celelalte calcule ale versiunii rămân)."""
+        calcul = c["calcul"]
+        try:
+            if c.get("test"):
+                shutil.rmtree(calcul["folder"], ignore_errors=True)   # dacă Excelul e deschis, rămâne local
+                if calcul["rez"].get("folder_drive"):                # mod Microsoft 365: calculul e și în Drive
+                    DRIVE.sterge(calcul["rez"]["folder_drive"])
+                return
             try:
-                DRIVE.sterge(c["calcul"]["rez"]["folder_drive"])
-            except Exception as e:
-                if arata_erori:
-                    messagebox.showwarning("Ștergere", f"Nu am putut șterge calculul din Drive:\n{e}")
+                os.remove(calcul["cale_excel"])
+                if os.path.isdir(calcul["folder"]) and not os.listdir(calcul["folder"]):
+                    os.rmdir(calcul["folder"])
+            except OSError:
+                pass
+            if calcul["rez"].get("excel_drive"):
+                DRIVE.sterge(calcul["rez"]["excel_drive"])
+                if not DRIVE._copii(calcul["rez"]["folder_drive"]):
+                    DRIVE.sterge(calcul["rez"]["folder_drive"])
+        except Exception as e:
+            if arata_erori:
+                messagebox.showwarning("Ștergere", f"Nu am putut șterge calculul din Drive:\n{e}")
 
     def la_inchidere(self):
         """La închiderea programului: calculele de probă se șterg (local și din Drive)."""
@@ -3785,11 +3956,17 @@ class AplicatieOferte:
         c = self._calcul_in_asteptare
         if not c:
             return
-        if not messagebox.askyesno("OK", "Ai verificat calculul? Fac PowerPoint-ul și PDF-ul cu valorile din "
-                                         "Excelul salvat?"):
+        if c.get("test"):
+            date_oferta = self._dialog_salvare_test(c)
+            if date_oferta is None:
+                return
+        elif not messagebox.askyesno("OK", "Ai verificat calculul? Fac PowerPoint-ul și PDF-ul cu valorile din "
+                                           "Excelul salvat?"):
             return
         self._stare_verificare(False)
         try:
+            if c.get("test") and date_oferta:               # proba devine ofertă reală, salvată în Drive
+                c = self._salveaza_test_ca_oferta(c, date_oferta)
             self.genereaza(c)
             self._calcul_in_asteptare = None
             self.taburi.select(0)
@@ -3797,6 +3974,72 @@ class AplicatieOferte:
             self._stare_verificare(True)
             self.status("Eroare la generare.", "red")
             messagebox.showerror("Eroare", str(e))
+
+    def _dialog_salvare_test(self, c):
+        """La OK pe un calcul de probă: datele ofertei (client, proiect...) ca să fie salvată în Drive, sau doar
+        PDF-ul de probă. Returnează dict (salvează), {} (doar probă) sau None (anulat)."""
+        win = tk.Toplevel(self.root)
+        win.title("Calcul de probă – salvez oferta?")
+        win.transient(self.root)
+        win.grab_set()
+        ttk.Label(win, justify="left", wraplength=460, text=(
+            "Calculul de probă e gata. Dacă vrei să-l păstrezi ca ofertă (prezentare, PDF și Excel în Drive), "
+            "completează datele de mai jos. Excelul de probă (cu ce ai modificat în el) se copiază în oferta nouă.")
+                  ).grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 8), sticky="w")
+        campuri = (("client", "Client:"), ("proiect", "Nume Proiect:"), ("locatie", "Locație:"),
+                   ("nr_proiect", "Nr. proiect:"))
+        intrari, valori = c["intrari"], {}
+        for i, (cheie, eticheta) in enumerate(campuri, start=1):
+            ttk.Label(win, text=eticheta).grid(row=i, column=0, padx=12, pady=4, sticky="w")
+            e = ttk.Entry(win, width=40)
+            v = str(intrari.get(cheie, "")).strip()
+            if v.lower() not in (TEXT_TEST, NR_PROIECT_TEST.lower(), "-"):
+                e.insert(0, v)
+            e.grid(row=i, column=1, padx=12, pady=4, sticky="w")
+            valori[cheie] = e
+        rezultat = {"v": None}
+
+        def salveaza():
+            date = {k: e.get().strip() for k, e in valori.items()}
+            if not date["client"] or not date["proiect"] or TEXT_TEST in (date["client"].lower(),
+                                                                          date["proiect"].lower()):
+                messagebox.showwarning("Date lipsă", "Completează Client și Nume Proiect (altele decât „test”).",
+                                       parent=win)
+                return
+            date["locatie"] = date["locatie"] or "-"
+            date["nr_proiect"] = date["nr_proiect"] or NR_PROIECT_IMPLICIT.format(
+                an_luna=datetime.now().strftime("%Y%m"))
+            rezultat["v"] = date
+            win.destroy()
+
+        def doar_proba():
+            rezultat["v"] = {}
+            win.destroy()
+
+        bf = ttk.Frame(win)
+        bf.grid(row=len(campuri) + 1, column=0, columnspan=2, pady=12)
+        tk.Button(bf, text="💾 Salvează ca ofertă (Drive)", command=salveaza, **STIL_BUTON).pack(side="left", padx=6)
+        tk.Button(bf, text="Doar PDF de probă", command=doar_proba).pack(side="left", padx=6)
+        tk.Button(bf, text="Anulează", command=win.destroy).pack(side="left", padx=6)
+        valori["client"].focus_set()
+        self.root.wait_window(win)
+        return rezultat["v"]
+
+    def _salveaza_test_ca_oferta(self, c, date_oferta):
+        """Copiază calculul de probă într-o ofertă reală; formularul primește datele noi (pentru calculele următoare)."""
+        self.status("Salvez calculul de probă ca ofertă...")
+        intrari = dict(c["intrari"], **date_oferta)
+        calcul = transforma_calcul_test(c["calcul"], intrari,
+                                        nume_existente=DRIVE.nume_oferte() if DRIVE is not None else (),
+                                        info_drive=DRIVE.info_oferta if DRIVE is not None else None)
+        self._sterge_calcul(c, arata_erori=False)
+        for cheie, eticheta in (("client", "Client:"), ("proiect", "Nume Proiect:"), ("locatie", "Locație:"),
+                                ("nr_proiect", "Nr. proiect:")):
+            self.intrari[eticheta].delete(0, "end")
+            self.intrari[eticheta].insert(0, intrari[cheie])
+        c = dict(c, intrari=intrari, calcul=calcul, test=False)
+        self._calcul_in_asteptare = c
+        return c
 
     def _organizeaza_pe_zile(self):
         try:
@@ -4523,16 +4766,13 @@ class AplicatieOferte:
     def calculeaza(self, intrari, baterie, nr_baterii, skid, trafo):
         """Pasul 1: Excelul de calcul; apoi tab-ul „Verificare calcul” (PowerPoint / PDF abia după OK)."""
         vechi = self._calcul_in_asteptare
-        if vechi and not vechi.get("test") and not messagebox.askyesno(
-                "Calcul în așteptare", f"Calculul „{vechi['calcul']['nume']}” nu a primit încă "
-                                       "OK. Îl înlocuiesc cu cel nou?"):
-            self.status("Anulat.", "gray")
-            return
         if vechi and vechi.get("test"):
             self._sterge_calcul(vechi)                 # calculul de probă anterior nu se păstrează
+        # calculul anterior fără OK rămâne în folderul versiunii (istoric); versiunea crește doar după prezentare
         calcul = calculeaza_oferta(self.date, intrari, baterie, nr_baterii, skid, trafo, status=self.status,
                                    online=self.mod_online.get(),
-                                   nume_existente=DRIVE.nume_oferte() if DRIVE is not None else ())
+                                   nume_existente=DRIVE.nume_oferte() if DRIVE is not None else (),
+                                   info_drive=DRIVE.info_oferta if DRIVE is not None else None)
         self._calcul_in_asteptare = {"calcul": calcul, "intrari": intrari, "baterie": baterie,
                                      "nr_baterii": nr_baterii, "skid": skid, "trafo": trafo,
                                      "test": e_calcul_test(intrari)}
@@ -4574,8 +4814,9 @@ class AplicatieOferte:
             self.status("Urc oferta în Drive...")
             try:
                 # în modul Microsoft 365 Excelul de calcul e deja în Drive (poate modificat în browser): nu-l suprascriem
-                link_drive = DRIVE.urca_oferta(r["folder"], sari={os.path.basename(r["cale_excel"])}
-                                               if c["calcul"].get("online") else ())
+                link_drive = DRIVE.urca_oferta(r["folder"], sari={
+                    f for f in os.listdir(r["folder"]) if f.startswith("Calcul_") and f.endswith(".xlsx")}
+                    if c["calcul"].get("online") else ())
             except Exception as e:
                 eroare_drive = str(e)
         if DRIVE is not None:
