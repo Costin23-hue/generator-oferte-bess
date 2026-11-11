@@ -514,6 +514,36 @@ class CitireATR(unittest.TestCase):
         self.assertIsNone(r.get("mw_max") if r.get("pi_text_kw") is None else None)
         self.assertIn("kWh", " ".join(r["avertismente"]))
 
+    def test_tabel_stocare_in_mw(self):
+        text = ("AVIZ TEHNIC DE RACORDARE Retele Electrice Romania. Aviz tehnic de racordare nr 11112222 din data "
+                "21/11/2025. se aproba racordarea la reteaua electrica a locului de consum si de producere \n"
+                "CEF + IS (denumirea) \n punctul de racordare este stabilit la nivelul de tensiune 20 kV \n"
+                "Tip IS* Pi IS \n(kW) \nPmax evac IS \n(kW) \n1 2 3 4 5 6 7 \n LFP 3 x JKE \n\n3,290 \n\n3,000 \n\n"
+                "3,000 \n\n9,435 \n P inv. stocare limitat \n" + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["nr"], r["data"], r["obiectiv"]), ("11112222", "21.11.2025", "CEF + IS"))
+        self.assertEqual((r["pi_is_kw"], r["evac_is_kw"], r["mw_max"]), (3290, 3000, 3.29))
+        self.assertIn("scrise în MW", " ".join(r["avertismente"]))
+
+    def test_atr_consumator(self):
+        text = ("Aviz tehnic de racordare nr  din data  33334444 17/07/2026\nRETELE ELECTRICE ROMANIA S.A.\n"
+                "AVIZ TEHNIC DE RACORDARE\nPENTRU CONSUMATOR CASNIC/NECASNIC\n"
+                "consum ce apartine utilizatorului , cu sediul in judetul  , municipiul/ orasul/SC FIRMA TEST SRL TIMIS\n"
+                "se aproba racordarea la reteaua electrica a locului de consum permanent/temporar\n"
+                " (denumirea locului de consum)STATIE TEST\namplasat in judetul  , municipiul/ orasul, cod postal TIMIS LUGOJ\n"
+                "  Puterea aprobata:1.\nEtapa finala\nPuterea maxima simultana\nce poate fi absorbita (kVA) 32,61 - - - 1.000\n"
+                "(kW) 30 - - - 900\n2. Descrierea succinta a solutiei\n"
+                "a) punctul de racordare este stabilit la nivelul de tensiune   kV, la , 20 A20 LEA MT\n" + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["nr"], r["data"], r["beneficiar"]), ("33334444", "17.07.2026", "SC FIRMA TEST SRL"))
+        self.assertEqual((r["obiectiv"], r["amplasament"], r["poc_kv"]), ("STATIE TEST", "județul TIMIS LUGOJ", 20))
+        self.assertEqual((r["abs_kva"], r["abs_kw"]), (1000, 900))
+        self.assertTrue(r["consumator"])
+        self.assertFalse(r["fara_stocare"])
+        av = " ".join(r["avertismente"])
+        self.assertIn("ATR de consumator", av)
+        self.assertNotIn("Nu am găsit puterea aprobată", av)
+
     def test_studiu_de_solutie(self):
         text = ("Actualizare Studiu de solutie privind Racordarea la SEN avand avizul tehnic de racordare nr. 18189 "
                 "din 12.12.2024 Rețele Electrice Dobrogea. punctul de racord se stabiliteste la bara de 20 kV din statie. "

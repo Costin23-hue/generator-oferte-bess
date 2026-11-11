@@ -2959,21 +2959,40 @@ def citeste_atr_text(text):
         if re.search(cuvant, original, re.I):
             r["operator"] = nume
             break
-    m = re.search(r"nr\.?\s*(\d{4,})\s*/\s*(?:data\s*)?(\d{2}\.\d{2}\.\d{4})", plat, re.I) or \
-        re.search(r"racordare\s+nr\.?\s*(\d{4,})\s+din\s+(?:data\s+)?(\d{2}\.\d{2}\.\d{4})", plat, re.I)
+    data_re = r"(\d{2}[./]\d{2}[./]\d{4})"
+    m = re.search(r"nr\.?\s*(\d{4,})\s*/\s*(?:data\s*)?" + data_re, plat, re.I) or \
+        re.search(r"racordare\s+nr\.?\s*(\d{4,})\s+din\s+(?:data\s+)?" + data_re, plat, re.I) or \
+        re.search(r"racordare\s+nr\s+din\s+(?:data\s+)?(\d{4,})\s+" + data_re, plat, re.I)  # câmpuri mutate la final
     if r["tip"] != "Aviz tehnic de racordare":       # studiu: ATR-ul la care se referă
         m = re.search(r"avizul\s+tehnic\s+de\s+racordare\s+nr\.?\s*(\d+)\s+din\s+(\d{2}\.\d{2}\.\d{4})", plat, re.I)
     if m:
-        r["nr"], r["data"] = m.group(1), m.group(2)
+        r["nr"], r["data"] = m.group(1), m.group(2).replace("/", ".")
+    r["consumator"] = bool(re.search(r"PENTRU\s+CONSUMATOR", plat, re.I))   # rafinat după puterea aprobată
     r["beneficiar"] = _cauta(r"adresat[ăa] de\s+(.+?),\s+pentru", plat) or \
         _cauta(r"utilizatorului\s+(.{3,80}?),\s+cu\s+(?:domiciliul|sediul)", plat) or \
         _cauta(r"Beneficiar\s*:?\s*([A-ZĂÂÎȘȚŞŢ0-9 .&-]+?S\.?R\.?L\.?)", plat)
-    r["obiectiv"] = _cauta(r"adresat[ăa] de .{0,120}?,\s+pentru\s+(.{0,200}?)\s+ce\s+a?par[țţt]ine", plat)
+    if not r["beneficiar"]:      # Rețele Electrice (consumator): valorile apar după etichete, la capăt de rând
+        zona = _cauta(r"utilizatorului(.{0,250})", plat) or ""
+        r["beneficiar"] = _cauta(r"((?:S\.?C\.?\s+)?[A-ZĂÂÎȘȚŞŢ][A-ZĂÂÎȘȚŞŢ0-9 .&-]{2,60}?\s(?:S\.?R\.?L\.?|S\.?A\.?))(?![A-Z])",
+                                 zona, re.S)
+    r["obiectiv"] = _cauta(r"adresat[ăa] de .{0,120}?,\s+pentru\s+(.{0,200}?)\s+ce\s+a?par[țţt]ine", plat) or \
+        _cauta(r"se\s+aprob\w*\s+racordarea.{0,90}?(?:consum\s+[sș]i\s+de\s+producere|producere|consum)\s+(?:permanent/temporar\s+)?"
+               r"([^()]{2,80}?)\s*\(denumirea\)", plat) or \
+        _cauta(r"\(denumirea[^)]*\)\s*([A-ZĂÂÎȘȚ0-9][A-ZĂÂÎȘȚ0-9 .,+-]{2,60}?)\s*(?:\n|amplasat)", text, re.S)
     r["amplasament"] = _cauta(r"amplasat\(?[ăa]?\)?\s+[îi]n\s+(jude[țţt]ul\s+[^,]+(?:,\s*-?\s*[^,]+)?)", plat)
+    if r["amplasament"]:                              # 'municipiul/ orasul/ comuna/ sat/ sector GURBANESTI' -> 'GURBANESTI'
+        r["amplasament"] = re.sub(r"(?:municipiul|ora[sș]ul|comuna|sat|sector)(?:\s*/\s*(?:municipiul|ora[sș]ul|comuna|"
+                                  r"sat|sector))+\s*", "", r["amplasament"])
+    if not r["amplasament"]:                          # câmpuri mutate la capăt de rând (Rețele Electrice, consumator)
+        loc = _cauta(r"amplasat\s+[îi]n\s+jude[țţt]ul.{0,120}?cod\s+postal\s+([A-ZĂÂÎȘȚ][A-ZĂÂÎȘȚ ]{2,60}?)\s*$", text,
+                     re.I | re.S | re.M)
+        r["amplasament"] = f"județul {loc}" if loc else None
 
     # Punctul de racordare (tensiunea)
     kv = _cauta(r"punct\w*\s+de\s+racord\w*\s*:?\s*(?:este\s+stabilit|se\s+stabil\w*|se\s+realizeaz\w*)\s+la\s+"
                 r"(?:nivelul\s+de\s+tensiune\s+(?:de\s+)?|bara\s+de\s+|tensiunea\s+de\s+)?(\d+(?:[,.]\d+)?)\s*kV", plat)
+    kv = kv or _cauta(r"punct\w*\s+de\s+racord\w*\s+este\s+stabilit\s+la\s+nivelul\s+de\s+tensiune\s+kV,\s*la\s*,?\s*"
+                      r"(\d+(?:[,.]\d+)?)\s", plat)          # valoarea mutată după 'kV, la ,'
     if kv:
         r["poc_kv"] = _nr_ro(kv)
 
@@ -2981,6 +3000,7 @@ def citeste_atr_text(text):
     # altul: eticheta e înainte sau după valori, kW sau kVA primul, '-' pentru etapele goale -> fiecare rând de valori
     # ia eticheta cea mai apropiată.
     sec = re.search(r"2\.\s*Puterea\s+aprobat\w*(.+?)3\.\s*Descrierea", text, re.I | re.S) or \
+        re.search(r"Puterea\s+aprobat\w*\s*:\s*1\.(.+?)2\.\s*Descrierea", text, re.I | re.S) or \
         re.search(r"2\.\s*Puterea\s+aprobat\w*(.{0,3000})", text, re.I | re.S)
     if sec:
         corp = sec.group(1)
@@ -3054,6 +3074,10 @@ def citeste_atr_text(text):
             if len(valori) < 4 or all(v == int(v) and v < 20 for v in valori):
                 continue
             r["pi_is_kw"], r["evac_is_kw"], r["abs_is_kw"], r["capacitate_ah"] = valori[:4]
+            if 0 < max(valori[:3]) < 50:              # puterile scrise în MW sub antetul (kW): '3,290' = 3290 kW
+                for k in ("pi_is_kw", "evac_is_kw", "abs_is_kw"):
+                    r[k] = round(r[k] * 1000, 3)
+                av.append("Tabelul stocării are puterile scrise în MW (sub antetul kW): le-am înmulțit cu 1000.")
             if len(valori) > 4 and valori[4] < 1000 and re.search(r"MWh", fereastra[:400]):
                 r["mwh"] = valori[4]
             break
@@ -3097,6 +3121,12 @@ def citeste_atr_text(text):
     r["fara_stocare"] = r["tip"] in ("Aviz tehnic de racordare", "Studiu de soluție") and not r.get("pi_is_kw") \
         and not r.get("pi_text_kw") and not re.search(r"instala\w*\s+de\s+stocare\s+(?:nou|cu\s+Pi|de\s+\d)|"
                                                        r"\bIS\s+(?:Pi\s*=|\d)", plat, re.I)
+    r["consumator"] = r["consumator"] and not r.get("evac_kw")
+    if r["fara_stocare"] and r["consumator"]:
+        r["fara_stocare"] = False
+        av.append("ATR de consumator (fără evacuare în rețea): BESS doar pentru consum propriu / peak shaving"
+                  + (f", absorbție aprobată {nr_eu(r['abs_kw'])} kW" if r.get("abs_kw") else "")
+                  + ". Puterea și capacitatea se iau din cererea clientului; pentru evacuare e nevoie de ATR nou.")
     if r["fara_stocare"]:
         av.append("ATR fără instalație de stocare (doar producere/consum): pentru BESS e nevoie de actualizarea "
                   "ATR-ului. Puterea aprobată de mai jos e cea a parcului.")
@@ -3142,7 +3172,7 @@ def citeste_atr_text(text):
                   + (f" ({sec_kv[0]})" if sec_kv else "") + ". Alege POC-ul skidului în ofertă.")
     if "mwh" not in r:
         av.append("Capacitatea (MWh) nu apare în ATR (doar Ah): ia-o din cererea clientului.")
-    if not evac:
+    if not evac and not r["consumator"]:
         av.append("Nu am găsit puterea aprobată pentru evacuare.")
     return r
 
@@ -3996,7 +4026,8 @@ class AplicatieOferte:
                 f"  evacuare în rețea:   {kw(r.get('evac_kw'))}" + (f" / {nr_eu(r['evac_kva'])} kVA" if r.get("evac_kva") else ""),
                 f"  absorbție din rețea: {kw(r.get('abs_kw'))}",
                 "",
-                "INSTALAȚIA DE STOCARE" + ("   ⚠ NU EXISTĂ ÎN ACEST ATR" if r.get("fara_stocare") else ""),
+                "INSTALAȚIA DE STOCARE" + ("   ⚠ NU EXISTĂ ÎN ACEST ATR" if r.get("fara_stocare") else
+                                           "   ⚠ ATR DE CONSUMATOR (fără evacuare)" if r.get("consumator") else ""),
                 f"  Pi stocare (tabel):  {kw(r.get('pi_is_kw'))}" + (f"   (în text: {kw(r.get('pi_text_kw'))})" if r.get("pi_text_kw") else ""),
                 f"  Pmax evacuare IS:    {kw(r.get('evac_is_kw'))}",
                 f"  Pmax absorbție IS:   {kw(r.get('abs_is_kw'))}",
