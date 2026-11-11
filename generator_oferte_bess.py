@@ -302,6 +302,50 @@ def numar(valoare, implicit=0.0):
         return implicit
 
 
+# ---------------- cursul USD/EUR (Banca Centrală Europeană) ----------------
+URL_CURS = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+
+
+def curs_din_bce(xml):
+    """Din XML-ul BCE ('1 EUR = 1,1625 USD', data 2026-11-10) -> (0.8602, '10.11.2026'): EUR pentru 1 USD."""
+    usd = re.search(r"currency=['\"]USD['\"]\s+rate=['\"]([\d.]+)", xml)
+    data = re.search(r"time=['\"](\d{4})-(\d{2})-(\d{2})", xml)
+    if not usd:
+        raise ValueError("BCE: cursul USD lipsește din răspuns.")
+    return round(1 / float(usd.group(1)), 4), (f"{data.group(3)}.{data.group(2)}.{data.group(1)}" if data else "")
+
+
+def curs_salvat():
+    """Ultimul curs descărcat (setari.json): (curs, data) sau (CURS_IMPLICIT, None)."""
+    s = citeste_setari()
+    try:
+        curs = float(s["curs"])
+        if CURS_MIN <= curs <= CURS_MAX:
+            return curs, s.get("curs_data")
+    except (KeyError, TypeError, ValueError):
+        pass
+    return CURS_IMPLICIT, None
+
+
+def actualizeaza_curs(timeout=8):
+    """Descarcă cursul BCE și îl ține minte. Returnează (curs, data); fără internet -> excepție."""
+    curs, data = curs_din_bce(_descarca_text(URL_CURS, timeout))
+    if not CURS_MIN <= curs <= CURS_MAX:
+        raise ValueError(f"Curs neobișnuit de la BCE: {curs}")
+    salveaza_setari(dict(citeste_setari(), curs=curs, curs_data=data))
+    return curs, data
+
+
+def locatie_cu_tara(locatie, tara, tari=()):
+    """Schimbă doar țara din locație: 'Sinești, Romania' + Moldova -> 'Sinești, Moldova'; '' -> 'Moldova'."""
+    locatie = str(locatie or "").strip()
+    if not locatie or locatie in tari:
+        return tara
+    if "," in locatie:
+        return locatie.rsplit(",", 1)[0].rstrip() + ", " + tara
+    return f"{locatie}, {tara}"
+
+
 # ---------------- actualizare automată de pe GitHub ----------------
 def _descarca_text(url, timeout=15):
     cerere = urllib.request.Request(url + f"?t={int(time.time())}", headers={"Cache-Control": "no-cache"})
@@ -3388,7 +3432,7 @@ def intrari_din_cerere(c):
         "ems_auto": not str(c.get("ems", "") or "").strip(),
         "eng": numar_cerere(c.get("eng"), 0.0),
         "adaos": numar_cerere(c.get("adaos"), 1.10),
-        "curs": numar_cerere(c.get("curs"), 0.89),
+        "curs": numar_cerere(c.get("curs"), curs_salvat()[0]),
         "poc_kv": numar_cerere(c.get("poc_kv"), float(POC_IMPLICIT_KV)),
     }
 
@@ -3686,17 +3730,19 @@ class AplicatieOferte:
 
         self.intrari = {}
         campuri = [
-            ("Client:", "GEP"), ("Nume Proiect:", "Proiect X"),
+            ("Client:", ""), ("Nume Proiect:", ""),          # goale la fiecare ofertă nouă
             # cu Drive-ul conectat rămâne gol: nr. de contract se ia automat din BESS_Proposals
             ("Nr. proiect:", "" if DRIVE is not None else NR_PROIECT_IMPLICIT.format(an_luna=datetime.now().strftime("%Y%m"))),
-            ("Locație:", "București, România"),
+            ("Locație:", "Romania"),                        # țara se schimbă din „Țară (foaia din tabel)”
             ("Capacitate (MWh):", "20"), ("Putere (MW):", "10"), ("Putere max. admisă (MW, opțional):", ""),
             ("Valoare EMS (USD):", f"{EMS_AUTO:g}"),
             ("Valoare ENG (USD):", "0"), ("Adaos Comercial (Margin):", f"{ADAOS_IMPLICIT:.2f}"),
-            ("Curs USD/EUR:", f"{CURS_IMPLICIT:g}"),
+            ("Curs USD/EUR:", f"{curs_salvat()[0]:g}"),     # ultimul curs BCE; se actualizează la pornire
         ]
+        self.etichete = {}
         for i, (eticheta, implicit) in enumerate(campuri):
-            ttk.Label(frame, text=eticheta).grid(row=i, column=0, sticky="w", pady=5)
+            self.etichete[eticheta] = ttk.Label(frame, text=eticheta)
+            self.etichete[eticheta].grid(row=i, column=0, sticky="w", pady=5)
             e = ttk.Entry(frame, width=25)
             e.insert(0, implicit)
             e.grid(row=i, column=1, sticky="e", pady=5)
@@ -3782,6 +3828,10 @@ class AplicatieOferte:
         if DRIVE is not None:                     # ofertele vechi din 'Oferte generate' -> foldere pe zile (în fundal)
             threading.Thread(target=self._organizeaza_pe_zile, daemon=True).start()
         self.root.after(1000, self._arata_actualizare)
+        self._curs = None
+        self._arata_data_curs(curs_salvat()[1], salvat=True)
+        threading.Thread(target=self._descarca_curs, daemon=True).start()
+        self.root.after(1000, self._arata_curs)
         self.probleme_pricing = None
         if self.date:
             self.root.after(200, self._verifica_pricing)
@@ -4052,6 +4102,36 @@ class AplicatieOferte:
             pass                                   # se reîncearcă la următoarea pornire
 
     # ---------------- actualizare automată ----------------
+    def _descarca_curs(self):
+        try:
+            self._curs = actualizeaza_curs()
+        except Exception as e:
+            self._curs = e
+
+    def _arata_data_curs(self, data, salvat=False, eroare=False):
+        text = "Curs USD/EUR:"
+        if data:
+            text = f"Curs USD/EUR (BCE {data}" + (", ultimul salvat" if salvat and eroare else "") + "):"
+        elif eroare:
+            text = "Curs USD/EUR (nu s-a putut actualiza):"
+        self.etichete["Curs USD/EUR:"].config(text=text)
+
+    def _arata_curs(self, incercari=30):
+        """Pune cursul BCE în fereastră (doar dacă nu l-ai modificat tu între timp)."""
+        if self._curs is None:
+            if incercari > 0:
+                self.root.after(1000, lambda: self._arata_curs(incercari - 1))
+            return
+        if isinstance(self._curs, Exception):
+            self._arata_data_curs(curs_salvat()[1], salvat=True, eroare=True)
+            return
+        curs, data = self._curs
+        camp = self.intrari["Curs USD/EUR:"]
+        if camp.get().strip().replace(",", ".") in (f"{curs_salvat()[0]:g}", f"{CURS_IMPLICIT:g}", ""):
+            camp.delete(0, "end")
+            camp.insert(0, f"{curs:g}")
+        self._arata_data_curs(data)
+
     def _arata_actualizare(self, incercari=60):
         if self._actualizare is None:                       # verificarea încă rulează (max. ~1 minut)
             if incercari:
@@ -4329,7 +4409,7 @@ class AplicatieOferte:
             pune("Client:", r["beneficiar"])
         if r.get("amplasament"):
             pune("Locație:", re.sub(r"(?i)^jude[țţt]ul\s+", "", r["amplasament"]).replace(", -", ",").strip()
-                 + ", Romania")
+                 + ", " + self.combo_tara.get())
         if r.get("poc_kv") and r["poc_kv"] <= 35:
             valori = list(self.combo_poc["values"])
             potrivit = next((v for v in valori if abs(float(re.match(r"\s*(\d+(?:[.,]\d+)?)", v).group(1)
@@ -4379,7 +4459,7 @@ class AplicatieOferte:
         self.combo_tara = ttk.Combobox(grup, values=list(TABELE_OFERTE), state="readonly", width=18)
         self.combo_tara.set("Romania")
         self.combo_tara.grid(row=0, column=1, padx=5, pady=4)
-        self.combo_tara.bind("<<ComboboxSelected>>", lambda e: self.ia_nr_contract())
+        self.combo_tara.bind("<<ComboboxSelected>>", lambda e: (self._schimba_tara_locatie(), self.ia_nr_contract()))
         ttk.Label(grup, text="Tip proiect:").grid(row=1, column=0, sticky="w", padx=5, pady=4)
         self.combo_tip = ttk.Combobox(grup, values=TIPURI_PROIECT, state="readonly", width=18)
         self.combo_tip.set(TIPURI_PROIECT[0])
@@ -4402,6 +4482,13 @@ class AplicatieOferte:
             .grid(row=6, column=0, columnspan=2, sticky="w", padx=5, pady=4)
         tk.Button(grup, text="📋 Trece o ofertă verificată în BESS_Proposals…", command=self.dialog_tabel,
                   **STIL_BUTON).grid(row=7, column=0, columnspan=2, sticky="we", padx=5, pady=(4, 8))
+
+    def _schimba_tara_locatie(self):
+        """Țara aleasă pentru BESS_Proposals trece și în locație (doar partea de țară)."""
+        camp = self.intrari["Locație:"]
+        nou = locatie_cu_tara(camp.get(), self.combo_tara.get(), tuple(TABELE_OFERTE))
+        camp.delete(0, "end")
+        camp.insert(0, nou)
 
     def ia_nr_contract(self):
         """Pune în 'Nr. proiect' primul nr. de contract liber din foaia țării alese."""

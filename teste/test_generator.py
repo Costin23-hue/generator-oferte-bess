@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 AICI = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.dirname(AICI), AICI]
@@ -387,6 +388,33 @@ class VersiuneDoarLaPrezentare(unittest.TestCase):
         antet = dict(g.antet_calcul({"client": "GEP", "proiect": "Sinesti", "nr_proiect": "ST9", "versiune": 3}))
         self.assertEqual(antet["A1:B2"][0][1], "GEP")
         self.assertEqual(antet["E2:E3"], [["ST9"], ["v3"]])
+
+
+class CursSiLocatie(unittest.TestCase):
+    XML_BCE = """<?xml version="1.0" encoding="UTF-8"?>
+<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01" xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">
+<Cube><Cube time='2026-11-10'><Cube currency='USD' rate='1.1625'/><Cube currency='JPY' rate='170.12'/></Cube></Cube>
+</gesmes:Envelope>"""
+
+    def test_curs_bce(self):
+        self.assertEqual(g.curs_din_bce(self.XML_BCE), (0.8602, "10.11.2026"))
+        with self.assertRaises(ValueError):
+            g.curs_din_bce("<Cube time='2026-11-10'></Cube>")
+
+    def test_curs_salvat_si_actualizare(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(g, "FISIER_SETARI", os.path.join(tmp, "setari.json")):
+            self.assertEqual(g.curs_salvat(), (g.CURS_IMPLICIT, None))
+            with mock.patch.object(g, "_descarca_text", lambda url, timeout=0: self.XML_BCE):
+                self.assertEqual(g.actualizeaza_curs(), (0.8602, "10.11.2026"))
+            self.assertEqual(g.curs_salvat(), (0.8602, "10.11.2026"))
+
+    def test_locatie_cu_tara(self):
+        tari = ("Romania", "Moldova", "Poland")
+        self.assertEqual(g.locatie_cu_tara("Sinești, Ialomița, Romania", "Moldova", tari), "Sinești, Ialomița, Moldova")
+        self.assertEqual(g.locatie_cu_tara("Romania", "Poland", tari), "Poland")
+        self.assertEqual(g.locatie_cu_tara("", "Moldova", tari), "Moldova")
+        self.assertEqual(g.locatie_cu_tara("Chișinău", "Moldova", tari), "Chișinău, Moldova")
 
 
 class FoiInSetari(unittest.TestCase):
