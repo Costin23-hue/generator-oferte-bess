@@ -525,6 +525,54 @@ class CitireATR(unittest.TestCase):
         self.assertEqual((r["mw"], r["mw_max"], r["mwh"]), (7.0, 7.7, 15.4))
         self.assertTrue(r["fara_absorbtie"])
 
+    def test_format_retele_electrice_kva_primul(self):
+        # eticheta înainte, (kVA) apoi (kW), '-' pentru etapele goale, '2.747' cu punct de mii; ATR doar PV
+        text = ("RETELE ELECTRICE ROMANIA S.A. Aviz tehnic de racordare nr. 11112222 din data 12.08.2025 "
+                "Ca urmare a cererii ... apartine utilizatorului S.C. TEST SOLAR S.R.L., cu domiciliul/sediul in judetul X\n"
+                "2. Puterea aprobata:\nPuterea maxima \nsimultana ce poate fi \nevacuata \n(kVA) \n- \n- \n3.052,2 \n"
+                "(kW) \n- \n- \n2.747 \nPuterea maxima \nsimultana ce poate fi \nevacuata fara \nrealizarea lucrarilor de"
+                " \nintarire \n(kVA) \n- \n0 \n(kW) \n- \n0 \nPuterea maxima \nsimultana ce poate fi \nabsorbita din retea"
+                " \n(kVA) \n- \n3,261 \n(kW) \n- \n3 \n3. Descrierea succinta\n"
+                "a) punctul de racordare este stabilit la nivelul de tensiune 20 kV, la LEA 20 kV X\n" + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["nr"], r["beneficiar"]), ("11112222", "S.C. TEST SOLAR S.R.L."))
+        self.assertEqual((r["evac_kw"], r["evac_kva"], r["abs_kw"]), (2747, 3052.2, 3))
+        self.assertTrue(r["fara_stocare"])
+        self.assertIn("fără instalație de stocare", " ".join(r["avertismente"]))
+
+    def test_eticheta_taiata_de_valori_si_valori_lipite(self):
+        text = ATR_TEST.replace("(kW) 4100,000 4100,000 4100,000Puterea maximă simultană ce poate fi",
+                                "Puterea maximă simultană ce (kW) 4100,000 4100,000\n4 / 13\npoate fi")
+        r = g.citeste_atr_text(text + " cuvânt" * 60)
+        self.assertEqual((r["evac_kw"], r["evac_kva"], r["abs_kw"]), (4100, 4550, 12))
+
+    def test_aviz_cte_studiu(self):
+        # tabel cu valori fără zecimale (+ MWh), puterea în text, punctul de racordare formulat altfel
+        text = ("AVIZ Comisia Tehnico-Economică ... faza de proiectare Studiu de Solutie Distributie Energie Electrica\n"
+                "Tip IS Pi \nIS(kW) \nPmax evac \nIS(kW) \nPmax abs \nIS(kW) \nCapacitate max \ntotala stocata IS(Ah) \n"
+                "Capacitate max totala \nstocata IS(MWh) \nObservatii \n Instalatie stocare TEST ST5015kWh-1250kW-4h \n"
+                " 2400 2400 2400 4800 4,8 \nPunct de racordare: se realizeaza la tensiunea de 20kV, la stalpul nr. 49. "
+                "În concluzie, CEM poate evacua și absorbi puterea maximă de 2.5 MW fără lucrări. " + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["pi_is_kw"], r["evac_is_kw"], r["abs_is_kw"], r["mwh"]), (2400, 2400, 2400, 4.8))
+        self.assertEqual((r["poc_kv"], r["evac_kw"], r["abs_kw"]), (20, 2500, 2500))
+        self.assertFalse(r["fara_absorbtie"])
+
+    def test_stocare_pe_joasa_tensiune_prin_trafo(self):
+        text = ATR_TEST.replace("4800,000 4100,000 0,000 13440,00", "2000,000 2000,000 0,000 6009,62\n8000 kWh fără "
+                                "încărcare din RED") + ("Instalația de stocare va fi racordată la nivelul de curent "
+                                "alternativ în TDRI: - 1 MW / 4 MWh racordare în TDRI trafo 2 1250 kVA JT; "
+                                "- 1 MW / 4 MWh racordare în TDRI trafo 3 1250 kVA JT. " + " cuvânt" * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual(r["mwh"], 8)                         # 8000 kWh, nu 4 MWh
+        self.assertTrue(r["cuplare_jt"])
+        self.assertIn("limitare de transformator", " ".join(r["avertismente"]))
+
+    def test_schema_de_statie(self):
+        r = g.citeste_atr_text("Schema normala a statiei de transformare 110/20/6 kV " + "text " * 60)
+        self.assertEqual(r["tip"], "Schemă de stație")
+        self.assertIn("nu pare a fi un ATR", " ".join(r["avertismente"]))
+
     def test_document_scanat(self):
         r = g.citeste_atr_text("   ")
         self.assertTrue(r["scanat"])
