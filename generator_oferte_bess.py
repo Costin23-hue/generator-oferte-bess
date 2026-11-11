@@ -357,6 +357,9 @@ def _normalizat(text):
     return text.replace("\r\n", "\n")
 
 
+MINUTE_VERIFICARE_ACTUALIZARE = 10       # cu programul deschis, verifică din nou la atâtea minute
+
+
 def cauta_actualizare():
     """{nume fișier: conținut nou} pentru fișierele programului care diferă de cele de pe GitHub; {} = la zi.
     Fără internet / GitHub indisponibil -> {} (programul merge normal)."""
@@ -4136,15 +4139,36 @@ class AplicatieOferte:
         if self._actualizare is None:                       # verificarea încă rulează (max. ~1 minut)
             if incercari:
                 self.root.after(1000, lambda: self._arata_actualizare(incercari - 1))
+            else:
+                self._programeaza_verificare_actualizare()
             return
-        if self._actualizare:
-            tk.Button(self.continut, text="⬆ Versiune nouă disponibilă – Actualizează", bg="#1e7e34", fg="white",
-                      font=("Helvetica", 10, "bold"), command=self.actualizeaza_programul)\
-                .pack(pady=(0, 8), fill="x", padx=20)
+        if self._actualizare and getattr(self, "btn_actualizare", None) is None:
+            self.btn_actualizare = tk.Button(
+                self.continut, text="⬆ Versiune nouă disponibilă – Actualizează", bg="#1e7e34", fg="white",
+                font=("Helvetica", 10, "bold"), command=self.actualizeaza_programul)
+            self.btn_actualizare.pack(pady=(0, 8), fill="x", padx=20)
+            self.status("A apărut o versiune nouă a programului: butonul verde „Actualizează”.", "green")
+        self._programeaza_verificare_actualizare()
+
+    def _programeaza_verificare_actualizare(self):
+        """Cu programul deschis, verifică din nou pe GitHub la fiecare MINUTE_VERIFICARE_ACTUALIZARE minute."""
+        if getattr(self, "_verificare_programata", False):
+            return
+        self._verificare_programata = True
+
+        def verifica():
+            self._verificare_programata = False
+            self._actualizare = None
+            threading.Thread(target=lambda: setattr(self, "_actualizare", cauta_actualizare()), daemon=True).start()
+            self.root.after(1000, self._arata_actualizare)
+        self.root.after(MINUTE_VERIFICARE_ACTUALIZARE * 60 * 1000, verifica)
 
     def actualizeaza_programul(self):
+        in_lucru = self._calcul_in_asteptare and not self._calcul_in_asteptare.get("test")
         if not messagebox.askyesno("Actualizare", "Instalez versiunea nouă și repornesc programul?\n\n"
-                                   "(Ce ai completat în fereastră se pierde.)"):
+                                   "(Ce ai completat în fereastră se pierde."
+                                   + (" Calculul care așteaptă OK rămâne în folderul ofertei, dar va trebui "
+                                      "refăcut pentru prezentare." if in_lucru else "") + ")"):
             return
         try:
             aplica_actualizare(self._actualizare)
