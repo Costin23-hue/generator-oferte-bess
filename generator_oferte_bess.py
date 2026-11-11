@@ -3170,6 +3170,15 @@ def citeste_atr_text(text):
         sec_kv = [rap for k, rap in r["trafo_kva"] if rap.startswith(str(int(r["poc_kv"])))]
         av.append(f"POC la {r['poc_kv']:g} kV: skidurile se leagă pe tensiunea medie a stației clientului"
                   + (f" ({sec_kv[0]})" if sec_kv else "") + ". Alege POC-ul skidului în ofertă.")
+    # bateriile din tabel: '3 x "Suntera JKE-5015K-2H" cu doar 10 rack-uri ... --> JKE4180K' -> 3 x 4,18 MWh
+    m = re.search(r"(\d+)\s*x\s*\"?\s*(?:Suntera\s+)?JKE-?(\d{4})K", plat, re.I)
+    if m:
+        dupa = re.search(r"-->\s*JKE-?(\d{4})K", plat[m.end():m.end() + 200], re.I)
+        r["mwh_baterii"] = round(int(m.group(1)) * int((dupa or m).group(1 if dupa else 2)) / 1000, 3)
+        if r.get("mwh") and abs(r["mwh_baterii"] - r["mwh"]) > 0.1:
+            av.append(f"Capacitatea diferă: {nr_eu(r['mwh'])} MWh în text, dar bateriile din tabel dau "
+                      f"{m.group(1)} x {(dupa or m).group(1 if dupa else 2)}K = {nr_eu(r['mwh_baterii'])} MWh "
+                      "(rack-uri scoase?). Verifică.")
     if "mwh" not in r:
         av.append("Capacitatea (MWh) nu apare în ATR (doar Ah): ia-o din cererea clientului.")
     if not evac and not r["consumator"]:
@@ -4032,7 +4041,8 @@ class AplicatieOferte:
                 f"  Pmax evacuare IS:    {kw(r.get('evac_is_kw'))}",
                 f"  Pmax absorbție IS:   {kw(r.get('abs_is_kw'))}",
                 f"  capacitate:          " + (f"{nr_eu(r['mwh'])} MWh" if r.get("mwh") else "-")
-                + (f"   ({nr_eu(r['capacitate_ah'])} Ah)" if r.get("capacitate_ah") else ""),
+                + (f"   ({nr_eu(r['capacitate_ah'])} Ah)" if r.get("capacitate_ah") else "")
+                + (f"   (bateriile din tabel: {nr_eu(r['mwh_baterii'])} MWh)" if r.get("mwh_baterii") else ""),
                 f"  cuplare pe DC:       {'DA' if r.get('cuplare_dc') else 'nu'}",
                 f"  legată pe JT (TDRI): {'DA (prin trafo-urile existente)' if r.get('cuplare_jt') else 'nu'}",
                 f"  fără absorbție:      {'DA' if r.get('fara_absorbtie') else 'nu'}",

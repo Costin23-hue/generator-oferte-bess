@@ -518,12 +518,15 @@ class CitireATR(unittest.TestCase):
         text = ("AVIZ TEHNIC DE RACORDARE Retele Electrice Romania. Aviz tehnic de racordare nr 11112222 din data "
                 "21/11/2025. se aproba racordarea la reteaua electrica a locului de consum si de producere \n"
                 "CEF + IS (denumirea) \n punctul de racordare este stabilit la nivelul de tensiune 20 kV \n"
-                "Tip IS* Pi IS \n(kW) \nPmax evac IS \n(kW) \n1 2 3 4 5 6 7 \n LFP 3 x JKE \n\n3,290 \n\n3,000 \n\n"
-                "3,000 \n\n9,435 \n P inv. stocare limitat \n" + "text " * 60)
+                "Tip IS* Pi IS \n(kW) \nPmax evac IS \n(kW) \n1 2 3 4 5 6 7 \n LFP (3 x \"Suntera JKE-5015K-2H-LAA \" cu 10 "
+                "rack-uri --> JKE4180K,2H) \n\n3,290 \n\n3,000 \n\n"
+                "3,000 \n\n9,435 \n P inv. stocare limitat \n instalatie de stocare de 15,045MWh " + "text " * 60)
         r = g.citeste_atr_text(text)
         self.assertEqual((r["nr"], r["data"], r["obiectiv"]), ("11112222", "21.11.2025", "CEF + IS"))
         self.assertEqual((r["pi_is_kw"], r["evac_is_kw"], r["mw_max"]), (3290, 3000, 3.29))
         self.assertIn("scrise în MW", " ".join(r["avertismente"]))
+        self.assertEqual(r["mwh_baterii"], 12.54)
+        self.assertIn("3 x 4180K = 12,54 MWh", " ".join(r["avertismente"]))
 
     def test_atr_consumator(self):
         text = ("Aviz tehnic de racordare nr  din data  33334444 17/07/2026\nRETELE ELECTRICE ROMANIA S.A.\n"
