@@ -440,6 +440,28 @@ class CursSiLocatie(unittest.TestCase):
         self.assertEqual(g.locatie_cu_tara("Chișinău", "Moldova", tari), "Chișinău, Moldova")
 
 
+class IstoricSiComparatie(unittest.TestCase):
+    def test_date_din_nume_oferta(self):
+        d = g.date_din_nume_oferta("ST1_BESS_Indicative_Proposal_Taliva_Proiect X_12,5MWh_4MW_v3")
+        self.assertEqual((d["Nr. proiect:"], d["Nume Proiect:"], d["Capacitate (MWh):"], d["Putere (MW):"],
+                          d["_versiune"]), ("ST1", "Proiect X", "12,5", "4", 3))
+        self.assertIsNone(g.date_din_nume_oferta("altceva"))
+
+    def test_procent_si_cotatie_veche(self):
+        self.assertEqual(g.procent_fata_de(100, 100), "cea mai ieftină")
+        self.assertEqual(g.procent_fata_de(103.2, 100), "+3,2%")
+        from datetime import datetime, timedelta
+        self.assertIn("are 90 de zile", g.avertisment_cotatie(datetime.now() - timedelta(days=90), "skidului"))
+        self.assertEqual(g.avertisment_cotatie(datetime.now() - timedelta(days=10), "skidului"), "")
+        self.assertEqual(g.avertisment_cotatie(None, "skidului"), "")
+
+    def test_skidurile_au_data_cotatiei(self):
+        date = date_test()
+        p = g.pregateste_oferta(date, g.lista_baterii(date["bat"]), intrari_test(), JINKO_2H, "DDP", "Kehua", None,
+                                None)
+        self.assertEqual(p["lista"][0]["data_cotatie"].year, 2026)
+
+
 class FoiInSetari(unittest.TestCase):
     """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
 

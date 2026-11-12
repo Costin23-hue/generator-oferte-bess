@@ -2298,6 +2298,32 @@ class DriveCloud:
         except NegasitDrive:
             return []
 
+    def lista_oferte(self):
+        """Toate ofertele din 'Oferte generate' (pe zile și vechi): [{'zi', 'nume', 'url', 'id'}], cele noi primele."""
+        rezultat = []
+        for c in self._copii(self.ofertare, FOLDER_OFERTE):
+            if "folder" not in c or c["name"].startswith("_"):
+                continue
+            if MODEL_FOLDER_ZI.match(c["name"]):
+                for x in self._copii(self.ofertare, f"{FOLDER_OFERTE}/{c['name']}"):
+                    if "folder" in x:
+                        rezultat.append({"zi": c["name"], "nume": x["name"], "url": x.get("webUrl"), "id": x["id"]})
+            else:
+                rezultat.append({"zi": (c.get("createdDateTime") or "")[:10], "nume": c["name"],
+                                 "url": c.get("webUrl"), "id": c["id"]})
+        return sorted(rezultat, key=lambda o: (o["zi"], o["nume"]), reverse=True)
+
+    def date_oferta(self, id_folder):
+        """Conținutul date_oferta.json din folderul unei oferte (None dacă oferta e veche și nu-l are)."""
+        drive_id = self.ofertare[0]
+        for f in self._copii((drive_id, id_folder)):
+            if f["name"] == FISIER_DATE_OFERTA:
+                temp = os.path.join(self.folder_lucru, FISIER_DATE_OFERTA)
+                self._descarca(drive_id, f["id"], temp)
+                with open(temp, encoding="utf-8") as fh:
+                    return json.load(fh)
+        return None
+
     def info_oferta(self, nume):
         """(zi, are_prezentare) pentru folderul unei oferte din 'Oferte generate/<zi>/'; None dacă nu-l găsim."""
         zi = getattr(self, "_oferte_zi", {}).get(nume)
@@ -3075,6 +3101,20 @@ def transforma_calcul_test(calcul, intrari, nume_existente=(), info_drive=None):
     rez["cale_excel"] = cale
     return {"nume": nume_oferta(intrari), "folder": folder, "rez": rez, "cale_excel": cale,
             "online": calcul.get("online")}
+
+
+FISIER_DATE_OFERTA = "date_oferta.json"          # datele din formular, salvate în folderul fiecărei oferte
+MODEL_NUME_OFERTA = re.compile(r"^(?P<nr>[^_]+)_BESS_Indicative_Proposal_Taliva_(?P<proiect>.+)_(?P<mwh>[\d.,]+)MWh_"
+                               r"(?P<mw>[\d.,]+)MW_v(?P<v>\d+)$")
+
+
+def date_din_nume_oferta(nume):
+    """Pentru ofertele vechi (fără date_oferta.json): nr., proiect, MWh, MW, versiunea din numele folderului."""
+    m = MODEL_NUME_OFERTA.match(str(nume).strip())
+    if not m:
+        return None
+    return {"Nr. proiect:": m["nr"], "Nume Proiect:": m["proiect"], "Capacitate (MWh):": m["mwh"],
+            "Putere (MW):": m["mw"], "_versiune": int(m["v"])}
 
 
 def nume_skid_prezentare(skid):
@@ -4690,7 +4730,9 @@ class AplicatieOferte:
                        "nimic în tabel: după ce verifici oferta, apasă butonul de mai jos.")\
             .grid(row=6, column=0, columnspan=2, sticky="w", padx=5, pady=4)
         tk.Button(grup, text="📋 Trece o ofertă verificată în BESS_Proposals…", command=self.dialog_tabel,
-                  **STIL_BUTON).grid(row=7, column=0, columnspan=2, sticky="we", padx=5, pady=(4, 8))
+                  **STIL_BUTON).grid(row=7, column=0, columnspan=2, sticky="we", padx=5, pady=(4, 4))
+        tk.Button(grup, text="📂 Istoric oferte / preia o ofertă veche…", command=self.dialog_istoric)\
+            .grid(row=8, column=0, columnspan=2, sticky="we", padx=5, pady=(4, 8))
 
     def _schimba_tara_locatie(self):
         """Țara aleasă pentru BESS_Proposals trece și în locație (doar partea de țară)."""
@@ -4698,6 +4740,115 @@ class AplicatieOferte:
         nou = locatie_cu_tara(camp.get(), self.combo_tara.get(), tuple(TABELE_OFERTE))
         camp.delete(0, "end")
         camp.insert(0, nou)
+
+    def _stare_formular(self):
+        """Tot ce e completat în tab-ul Ofertă (texte + meniuri), ca să se poată relua într-o versiune nouă."""
+        d = {k: e.get() for k, e in self.intrari.items()}
+        for cheie, w in (("_baterie", self.combo_baterie), ("_brand", self.combo_brand),
+                         ("_nr_skid", self.combo_nr_skid), ("_incoterm", self.combo_incoterm),
+                         ("_poc", self.combo_poc), ("_tara", self.combo_tara), ("_tip", self.combo_tip)):
+            d[cheie] = w.get()
+        d["_rezerva"] = {k: e.get() for k, e in getattr(self, "rezerva", {}).items()}
+        d["_trafo"] = self._mod_trafo()
+        return d
+
+    def _aplica_formular(self, d):
+        for k, e in self.intrari.items():
+            if k in d and k != "Curs USD/EUR:":           # cursul rămâne cel de azi
+                e.delete(0, "end")
+                e.insert(0, d[k])
+        for cheie, w in (("_baterie", self.combo_baterie), ("_brand", self.combo_brand),
+                         ("_nr_skid", self.combo_nr_skid), ("_incoterm", self.combo_incoterm),
+                         ("_poc", self.combo_poc), ("_tara", self.combo_tara), ("_tip", self.combo_tip)):
+            if d.get(cheie) and (d[cheie] in w["values"] or cheie == "_poc"):
+                w.set(d[cheie])
+        for k, v in (d.get("_rezerva") or {}).items():
+            if k in getattr(self, "rezerva", {}):
+                self.rezerva[k].delete(0, "end")
+                self.rezerva[k].insert(0, v)
+        if "_trafo" in d:
+            self.fara_aux.set(d["_trafo"] == "fara")
+            self.foloseste_aux.set(d["_trafo"] is True)
+
+    def dialog_istoric(self):
+        """Ofertele din Drive: căutare (nr., client, proiect), deschidere în browser, preluare în formular."""
+        if DRIVE is None:
+            messagebox.showwarning("Istoric", "Istoricul merge doar cu Drive-ul conectat.")
+            return
+        try:
+            self.status("Citesc ofertele din Drive...")
+            oferte = DRIVE.lista_oferte()
+        except Exception as e:
+            messagebox.showerror("Istoric", f"Nu pot citi ofertele din Drive:\n{e}")
+            return
+        finally:
+            self.status("Aștept date...", "gray")
+        win = tk.Toplevel(self.root)
+        win.title("Istoric oferte")
+        win.transient(self.root)
+        sus = ttk.Frame(win)
+        sus.pack(fill="x", padx=10, pady=8)
+        ttk.Label(sus, text="Caută (nr. contract, proiect, MWh...):").pack(side="left")
+        cautare = ttk.Entry(sus, width=40)
+        cautare.pack(side="left", padx=6)
+        cautare.insert(0, self.intrari["Nr. proiect:"].get().strip())
+        lista = tk.Listbox(win, width=130, height=20, font=("Consolas", 9))
+        lista.pack(padx=10, fill="both", expand=True)
+        vizibile = []
+
+        def filtreaza(*_):
+            text = cautare.get().strip().lower()
+            vizibile[:] = [o for o in oferte if not text or text in (o["zi"] + " " + o["nume"]).lower()]
+            lista.delete(0, "end")
+            for o in vizibile:
+                lista.insert("end", f"{o['zi']}   {o['nume']}")
+
+        def aleasa():
+            if not lista.curselection():
+                messagebox.showinfo("Istoric", "Alege o ofertă din listă.", parent=win)
+                return None
+            return vizibile[lista.curselection()[0]]
+
+        def deschide(*_):
+            o = aleasa()
+            if o and o.get("url"):
+                webbrowser.open(o["url"])
+
+        def preia():
+            o = aleasa()
+            if not o:
+                return
+            try:
+                d = DRIVE.date_oferta(o["id"])
+            except Exception:
+                d = None
+            nota = ""
+            if d is None:                                # ofertă veche: din nume + clientul din BESS_Proposals
+                d = date_din_nume_oferta(o["nume"]) or {}
+                nota = "\n\nOferta e veche (fără datele salvate): am luat doar ce se vede în nume"
+                try:
+                    client = next((c for _, nr, c in contracte_din_tabel(self.combo_tara.get())
+                                   if nr == d.get("Nr. proiect:")), None)
+                    if client:
+                        d["Client:"] = client
+                        nota += " și clientul din BESS_Proposals"
+                except Exception:
+                    pass
+                nota += ". Restul verifică-l."
+            self._aplica_formular(d)
+            win.destroy()
+            self.taburi.select(self.tab_oferta)
+            messagebox.showinfo("Istoric", f"Am preluat oferta în formular (v{d.get('_versiune', '?')}). La calcul "
+                                           "se face automat versiunea următoare." + nota)
+
+        cautare.bind("<KeyRelease>", filtreaza)
+        lista.bind("<Double-Button-1>", deschide)
+        bf = ttk.Frame(win)
+        bf.pack(pady=10)
+        tk.Button(bf, text="↺ Preia în formular (versiune nouă)", command=preia, **STIL_BUTON).pack(side="left", padx=6)
+        tk.Button(bf, text="🌐 Deschide în browser", command=deschide).pack(side="left", padx=6)
+        tk.Button(bf, text="Închide", command=win.destroy).pack(side="left", padx=6)
+        filtreaza()
 
     def ia_nr_contract(self):
         """Pune în 'Nr. proiect' primul nr. de contract liber din foaia țării alese."""
@@ -5081,6 +5232,7 @@ class AplicatieOferte:
                                    nume_existente=DRIVE.nume_oferte() if DRIVE is not None else (),
                                    info_drive=DRIVE.info_oferta if DRIVE is not None else None)
         self._calcul_in_asteptare = {"calcul": calcul, "intrari": intrari, "baterie": baterie,
+                                     "formular": self._stare_formular(),
                                      "nr_baterii": nr_baterii, "skid": skid, "trafo": trafo,
                                      "test": e_calcul_test(intrari)}
         self._stare_verificare(True)
@@ -5117,6 +5269,12 @@ class AplicatieOferte:
             self._termina_test(c, r)
             return
         link_drive, eroare_drive = None, None
+        try:                                           # datele formularului, pentru „Preia în formular” (v2, v3...)
+            with open(os.path.join(r["folder"], FISIER_DATE_OFERTA), "w", encoding="utf-8") as f:
+                json.dump(dict(c.get("formular") or {}, _versiune=intrari.get("versiune")), f, ensure_ascii=False,
+                          indent=1)
+        except OSError:
+            pass
         if DRIVE is not None:
             self.status("Urc oferta în Drive...")
             try:
