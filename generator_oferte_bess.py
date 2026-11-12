@@ -182,6 +182,9 @@ KVA_CONSUM_SKID = [(2, 30), (5, 40), (7.5, 50), (10, 60)]
 # Skidul are trafo propriu, separat, pentru consumul lui (altul decât trafo-ul aux din numele lui, care rămâne pentru
 # baterii) -> consumul skidului NU intră în necesarul aux. True = se adună iar (regula veche).
 CONSUM_SKID_IN_NECESAR = False
+# Citirea ATR-urilor / caietelor de sarcini cu AI (Claude, prin API-ul Anthropic; cheia API se pune o dată în
+# fereastră și se ține minte local). claude-sonnet-5-5 = mai precis; claude-haiku-5-5 = de ~20 de ori mai ieftin.
+MODEL_AI = "claude-sonnet-5-5"
 # ATR-uri cu capacitatea doar în Ah: MWh = Ah x tensiunea nominală a bateriei (V) / 1.000.000. Tensiunea depinde de
 # baterie: {text din tipul bateriei din ATR: V}, ex. {"LUNA2000": 1331.2}. Se completează în Setari generator.xlsx.
 TENSIUNE_BATERIE_V = {}
@@ -301,6 +304,7 @@ SETARI_EDITABILE = [
     ("KVA_CONSUM_SKID", "Consum aux propriu / skid (până la MW = kVA)", "trepte"),
     ("TENSIUNE_BATERIE_V", "ATR: tensiunea nominală a bateriei pentru Ah -> MWh (tip din ATR = V)", "perechi"),
     ("ZILE_COTATIE_VECHE", "Previzualizare: cotații mai vechi de atâtea zile sunt semnalate ⚠", "intreg"),
+    ("MODEL_AI", "Citire ATR cu AI: modelul Claude (claude-sonnet-5-5 sau claude-haiku-5-5)", "text"),
     ("CONSUM_SKID_IN_NECESAR", "Consumul skidului intră în necesarul aux (NU = skidul are trafo propriu separat)",
      "da_nu"),
     ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),

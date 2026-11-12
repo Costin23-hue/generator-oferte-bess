@@ -50,6 +50,8 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
   fără paranteze, POC „0/20000/0 V”, uneori lipsește rândul „evacuată”), Transelectrica (draft), E-Distribuție,
   caiet de sarcini (putere min. instalată, string), aviz de amplasament (nu e ATR).
 - Capacitate doar în Ah: MWh = Ah x tensiunea bateriei (TENSIUNE_BATERIE_V în setări sau câmpul din tab-ul ATR).
+- Buton „🤖 Citește cu AI”: PDF-ul trimis la Claude (MODEL_AI, implicit claude-sonnet-5-5; cheie API locală în setari.json
+  „cheie_claude” sau ANTHROPIC_API_KEY), structured output -> același dicționar (citeste_atr_ai / rezultat_din_ai).
 - Scanate (fără text) -> doar avertisment (fără OCR deocamdată). Lipsesc exemple E-Distribuție și Delgaz în format text.
 - Regula utilizatorului: puterea skidului poate depăși evacuarea (limitare EMS), dar nu trafo-urile din parc / Pi stocare.
 

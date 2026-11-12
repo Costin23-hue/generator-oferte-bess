@@ -18,8 +18,8 @@ done
 
 echo "Instalez bibliotecile (pandas, openpyxl, python-pptx)..."
 "$PY" -m pip install --quiet --upgrade pip
-"$PY" -m pip install --quiet "pandas==2.3.3" openpyxl python-pptx pypdf \
-  || "$PY" -m pip install --user --quiet "pandas==2.3.3" openpyxl python-pptx pypdf
+"$PY" -m pip install --quiet "pandas==2.3.3" openpyxl python-pptx pypdf anthropic \
+  || "$PY" -m pip install --user --quiet "pandas==2.3.3" openpyxl python-pptx pypdf anthropic
 
 mkdir -p "$FOLDER"
 cd "$FOLDER"

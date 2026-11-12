@@ -412,3 +412,100 @@ def citeste_atr_text(text):
     if not evac and not r["consumator"]:
         av.append("Nu am găsit puterea aprobată pentru evacuare.")
     return r
+
+
+# ---------------- citirea cu AI (Claude) ----------------
+_NUL = lambda tip: {"anyOf": [{"type": tip}, {"type": "null"}]}
+CAMPURI_AI = {
+    "tip": ({"type": "string"}, "Aviz tehnic de racordare / Studiu de soluție / Caiet de sarcini / Aviz de amplasament / "
+                                 "Cerere de ofertă / alt document"),
+    "operator": (_NUL("string"), "operatorul de rețea (Electrica, Rețele Electrice, Delgaz Grid, E-Distribuție, "
+                                 "Distribuție Energie Oltenia, Transelectrica)"),
+    "nr": (_NUL("string"), "numărul ATR-ului / documentului"),
+    "data": (_NUL("string"), "data documentului, zz.ll.aaaa"),
+    "beneficiar": (_NUL("string"), "beneficiarul / clientul (firma)"),
+    "obiectiv": (_NUL("string"), "denumirea obiectivului / proiectului"),
+    "amplasament": (_NUL("string"), "localitatea și județul"),
+    "poc_kv": (_NUL("number"), "tensiunea punctului de racordare, kV"),
+    "evac_kw": (_NUL("number"), "puterea maximă aprobată pentru evacuare în rețea (etapa finală), kW"),
+    "evac_kva": (_NUL("number"), "aceeași, în kVA"),
+    "abs_kw": (_NUL("number"), "puterea maximă aprobată absorbită din rețea, kW"),
+    "pi_is_kw": (_NUL("number"), "puterea instalată a instalației de stocare (Pi IS), kW"),
+    "evac_is_kw": (_NUL("number"), "Pmax evacuată de instalația de stocare, kW"),
+    "abs_is_kw": (_NUL("number"), "Pmax absorbită de instalația de stocare, kW"),
+    "capacitate_ah": (_NUL("number"), "capacitatea stocării în Ah, dacă e dată în Ah"),
+    "mwh": (_NUL("number"), "capacitatea totală a stocării în MWh (calculată doar dacă e sigur; altfel null)"),
+    "mw_min": (_NUL("number"), "puterea minimă instalată cerută (caiete de sarcini), MW"),
+    "baterii": (_NUL("string"), "tipul / modelul bateriilor și al invertoarelor, cum apar în document"),
+    "cuplare_dc": ({"type": "boolean"}, "stocarea e cuplată pe DC (DC/DC, prin invertoarele parcului)"),
+    "fara_absorbtie": ({"type": "boolean"}, "bateriile nu au voie să se încarce din rețea"),
+    "fara_stocare": ({"type": "boolean"}, "documentul NU prevede nicio instalație de stocare"),
+    "consumator": ({"type": "boolean"}, "e ATR de consumator (fără evacuare în rețea)"),
+    "cere_string": ({"type": "boolean"}, "se cer obligatoriu invertoare de tip string"),
+    "observatii": ({"type": "array", "items": {"type": "string"}},
+                   "ce trebuie verificat de om la ofertare: neconcordanțe, limitări, condiții speciale (scurt, în română)"),
+}
+PROMPT_AI = """Ești inginer la un furnizor de sisteme BESS (baterii + PCS / MV skid) din România. Primești un document
+(aviz tehnic de racordare ATR, studiu de soluție, caiet de sarcini, cerere de ofertă). Extrage datele pentru ofertare.
+Reguli:
+- Puterile în kW (dacă documentul scrie MW, înmulțește cu 1000). Atenție la virgula zecimală românească.
+- Din tabelul puterii aprobate ia valoarea de la ETAPA FINALĂ.
+- Nu inventa: ce nu apare clar în document = null.
+- Dacă stocarea apare doar în Ah, completează capacitate_ah și pune mwh doar dacă documentul dă și tensiunea/energia.
+- În observatii pune scurt (română) ce e important pentru ofertă: evacuare diferită de Pi stocare, lipsa absorbției,
+  cuplare DC, legare pe joasă tensiune prin trafo-urile existente, puteri minime cerute, invertoare string etc.
+Descrierea câmpurilor:
+""" + "\n".join(f"- {k}: {d}" for k, (_, d) in CAMPURI_AI.items())
+
+
+def citeste_atr_ai(cale_pdf, cheie_api, model=None):
+    """Citește PDF-ul cu Claude (API Anthropic) și întoarce același dicționar ca citeste_atr_text."""
+    import anthropic
+    with open(cale_pdf, "rb") as f:
+        pdf = base64.standard_b64encode(f.read()).decode("ascii")
+    schema = {"type": "object", "properties": {k: s for k, (s, _) in CAMPURI_AI.items()},
+              "required": list(CAMPURI_AI), "additionalProperties": False}
+    client = anthropic.Anthropic(api_key=cheie_api)
+    model = model or MODEL_AI
+    parametri = dict(
+        model=model, max_tokens=16000,
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}},
+        messages=[{"role": "user", "content": [
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf}},
+            {"type": "text", "text": PROMPT_AI}]}])
+    if model.startswith(("claude-sonnet-5-5", "claude-opus-5", "claude-fable")):
+        # dacă modelul refuză (rar), API-ul reîncearcă singur pe alt model
+        raspuns = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+                                              **parametri)
+    else:
+        raspuns = client.messages.create(**parametri)
+    if raspuns.stop_reason == "refusal":
+        raise RuntimeError("Claude a refuzat documentul. Folosește citirea normală.")
+    if raspuns.stop_reason == "max_tokens":
+        raise RuntimeError("Răspunsul AI a fost tăiat (document prea lung). Folosește citirea normală.")
+    text = next(b.text for b in raspuns.content if b.type == "text")
+    return rezultat_din_ai(json.loads(text), model)
+
+
+def rezultat_din_ai(d, model=""):
+    """Datele de la AI -> dicționarul cititorului (cu propunerile pentru ofertă: mw, mw_max)."""
+    r = {k: v for k, v in d.items() if v not in (None, "")}
+    r.setdefault("trafo_kva", [])
+    av = r["avertismente"] = [f"(AI) {o}" for o in d.get("observatii") or []]
+    r.pop("observatii", None)
+    r["citit_cu"] = model
+    evac = r.get("evac_is_kw") or r.get("evac_kw")
+    if evac:
+        r["mw"] = evac / 1000
+    if r.get("pi_is_kw") and (not evac or r["pi_is_kw"] <= 2.5 * evac):
+        r["mw_max"] = r["pi_is_kw"] / 1000
+    if r.get("capacitate_ah") and not r.get("mwh"):
+        tensiune = next((v for k, v in TENSIUNE_BATERIE_V.items() if k.lower() in (r.get("baterii") or "").lower()), None)
+        if tensiune:
+            r["mwh"] = round(r["capacitate_ah"] * tensiune / 1e6, 3)
+            av.append(f"Capacitate din Ah: {nr_eu(r['capacitate_ah'])} Ah x {nr_eu(tensiune)} V = {nr_eu(r['mwh'])} MWh.")
+    if r.get("mw_min") and evac and evac / 1000 < r["mw_min"] - 1e-6:
+        av.append(f"Minimum {nr_eu(r['mw_min'])} MW instalați, limitați prin EMS la {nr_eu(evac / 1000)} MW.")
+    if not r.get("mwh"):
+        av.append("Capacitatea (MWh) nu e sigură: din Ah cu tensiunea bateriei sau din cererea clientului.")
+    return r

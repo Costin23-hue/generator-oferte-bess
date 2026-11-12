@@ -19,7 +19,7 @@ import PyInstaller.__main__
 
 SCRIPT = "generator_oferte_bess.py"
 NUME_APLICATIE = "Generator Oferte BESS"
-PACHETE = ["pandas", "openpyxl", "pptx", "xlwings", "pypdf"]
+PACHETE = ["pandas", "openpyxl", "pptx", "xlwings", "pypdf", "anthropic"]
 PACHETE_MAC = ["appscript", "aem", "mactypes", "psutil"]      # xlwings pe Mac controlează Excel prin appscript
 FOLDERE_EXCLUSE = {"tests", "__pycache__"}
 

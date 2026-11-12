@@ -505,6 +505,41 @@ class Viteza(unittest.TestCase):
             app.quit.assert_called_once()
 
 
+class CitireAI(unittest.TestCase):
+    RASPUNS = {"tip": "Caiet de sarcini", "operator": None, "nr": "123", "data": "29.01.2026", "beneficiar": "FIRMA SRL",
+               "obiectiv": "BESS", "amplasament": "Olt", "poc_kv": 20, "evac_kw": 5850, "evac_kva": None,
+               "abs_kw": 5850, "pi_is_kw": None, "evac_is_kw": None, "abs_is_kw": None, "capacitate_ah": None,
+               "mwh": 13.5, "mw_min": 6.816, "baterii": None, "cuplare_dc": False, "fara_absorbtie": False,
+               "fara_stocare": False, "consumator": False, "cere_string": True, "observatii": ["invertoare string"]}
+
+    def test_citire_cu_ai(self):
+        import json, types
+        cereri = []
+
+        class Raspuns:
+            stop_reason = "end_turn"
+            content = [types.SimpleNamespace(type="text", text=json.dumps(self.RASPUNS))]
+
+        class Mesaje:
+            def create(self, **k):
+                cereri.append(k)
+                return Raspuns()
+
+        client = types.SimpleNamespace(messages=Mesaje(), beta=types.SimpleNamespace(messages=Mesaje()))
+        fals = types.SimpleNamespace(Anthropic=lambda api_key: client)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sys.modules, {"anthropic": fals}):
+            pdf = os.path.join(tmp, "a.pdf")
+            open(pdf, "wb").write(b"%PDF-1.4 test")
+            r = g.citeste_atr_ai(pdf, "sk-test", "claude-sonnet-5-5")
+        self.assertEqual((r["mw"], r["mwh"], r["poc_kv"], r["citit_cu"]), (5.85, 13.5, 20, "claude-sonnet-5-5"))
+        self.assertIn("(AI) invertoare string", r["avertismente"])
+        self.assertIn("Minimum 6,816 MW", " ".join(r["avertismente"]))
+        k = cereri[0]
+        self.assertEqual(k["fallbacks"], "default")
+        self.assertEqual(k["messages"][0]["content"][0]["type"], "document")
+        self.assertEqual(k["output_config"]["format"]["type"], "json_schema")
+
+
 class FoiInSetari(unittest.TestCase):
     """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
 

@@ -667,6 +667,7 @@ class AplicatieOferte:
         self.btn_completeaza_atr = tk.Button(butoane, text="➡ Completează oferta cu aceste valori", state="disabled",
                                              command=self._completeaza_din_atr, **STIL_BUTON)
         self.btn_completeaza_atr.pack(side="left")
+        tk.Button(butoane, text="🤖 Citește cu AI (Claude)", command=self.citeste_atr_ai).pack(side="left", padx=(8, 0))
         ttk.Label(butoane, text="   Tensiune baterie (V):").pack(side="left")
         self.txt_tensiune_atr = ttk.Entry(butoane, width=8)
         self.txt_tensiune_atr.pack(side="left", padx=4)
@@ -697,6 +698,84 @@ class AplicatieOferte:
                                  f"{nr_eu(r['mwh'])} MWh.")
         self._arata_atr(r)
 
+    def _cheie_ai(self, schimba=False):
+        """Cheia API Anthropic: din variabila ANTHROPIC_API_KEY sau din setările locale (cerută o singură dată)."""
+        cheie = "" if schimba else (os.environ.get("ANTHROPIC_API_KEY") or citeste_setari().get("cheie_claude", ""))
+        if not cheie:
+            from tkinter import simpledialog
+            cheie = simpledialog.askstring(
+                "Cheie API Claude", "Lipește cheia API Anthropic (începe cu sk-ant-...).\n\nSe face din "
+                "console.anthropic.com -> API Keys (se plătește separat de abonamentul Claude, după folosire).\n"
+                "Se ține minte doar pe acest calculator.", show="*", parent=self.root) or ""
+            cheie = cheie.strip()
+            if cheie:
+                salveaza_setari(dict(citeste_setari(), cheie_claude=cheie))
+        return cheie
+
+    def _asigura_pachet(self, pachet):
+        """Instalează o dată un pachet Python lipsă (ex. anthropic), cu acordul utilizatorului."""
+        import importlib
+        try:
+            importlib.import_module(pachet)
+            return True
+        except ImportError:
+            pass
+        if not messagebox.askyesno("Instalare", f"Trebuie instalată o dată biblioteca „{pachet}”.\n\nO instalez acum? "
+                                                "(câteva secunde, e nevoie de internet)"):
+            return False
+        rez = subprocess.run([sys.executable.replace("pythonw", "python"), "-m", "pip", "install", "--user", pachet],
+                             capture_output=True, text=True)
+        if rez.returncode != 0:
+            messagebox.showerror("Instalare", f"Instalarea nu a mers:\n{rez.stderr[-800:]}")
+            return False
+        import site
+        site.addsitedir(site.getusersitepackages())
+        importlib.invalidate_caches()
+        return True
+
+    def citeste_atr_ai(self):
+        """ATR / caiet de sarcini citit de Claude (pentru documentele pe care citirea normală nu le înțelege)."""
+        cale = getattr(self, "_cale_atr", None)
+        if not cale or not messagebox.askyesno("Citire cu AI", f"Citesc cu AI documentul\n{os.path.basename(cale)}?"
+                                                                "\n\n(Nu = alegi alt PDF)"):
+            cale = filedialog.askopenfilename(title="Alege documentul (PDF)", filetypes=[("PDF", "*.pdf")])
+        if not cale or not self._asigura_pachet("anthropic"):
+            return
+        cheie = self._cheie_ai()
+        if not cheie:
+            return
+        self._cale_atr = cale
+        self.status(f"Claude citește documentul ({MODEL_AI}), durează 20-60 de secunde...")
+        rezultat = {}
+        fir = threading.Thread(target=lambda: rezultat.update(r=self._ruleaza_ai(cale, cheie)), daemon=True)
+        fir.start()
+
+        def asteapta():
+            if fir.is_alive():
+                self.root.after(500, asteapta)
+                return
+            r = rezultat.get("r")
+            self.status("Aștept date...", "gray")
+            if isinstance(r, Exception):
+                text = str(r)
+                if "authentication" in type(r).__name__.lower() or "401" in text:
+                    salveaza_setari({k: v for k, v in citeste_setari().items() if k != "cheie_claude"})
+                    text = "Cheia API nu e validă (am șters-o; la următoarea citire o ceri din nou)."
+                messagebox.showerror("Citire cu AI", text)
+                return
+            r["fisier"] = os.path.basename(cale)
+            self._atr = r
+            self._arata_atr(r)
+            self.btn_completeaza_atr.config(state="normal" if r.get("mw") or r.get("mwh") else "disabled")
+        asteapta()
+
+    @staticmethod
+    def _ruleaza_ai(cale, cheie):
+        try:
+            return citeste_atr_ai(cale, cheie)
+        except Exception as e:
+            return e
+
     def citeste_atr(self):
         cale = filedialog.askopenfilename(title="Alege ATR-ul (PDF)", filetypes=[("PDF", "*.pdf")])
         if not cale:
@@ -724,13 +803,18 @@ class AplicatieOferte:
             return
         r = citeste_atr_text(text)
         r["fisier"] = os.path.basename(cale)
+        self._cale_atr = cale
+        if r.get("tip") in ("document", "Caiet de sarcini") or not r.get("mw"):
+            r["avertismente"].append("Citirea normală pare incompletă: încearcă „🤖 Citește cu AI”.")
         self._atr = r
         self._arata_atr(r)
         self.btn_completeaza_atr.config(state="disabled" if r.get("scanat") or not r.get("mw") else "normal")
 
     def _arata_atr(self, r):
         kw = lambda v: f"{nr_eu(v)} kW" if v is not None else "-"
-        linii = [f"📄 {r.get('fisier', '')}", ""]
+        linii = [f"📄 {r.get('fisier', '')}" + (f"   (citit cu AI: {r['citit_cu']})" if r.get("citit_cu") else ""), ""]
+        if r.get("baterii"):
+            linii[1:1] = [f"Baterii / invertoare:  {r['baterii']}"]
         if not r.get("scanat"):
             linii += [
                 f"Tip document:          {r.get('tip', '-')}",
