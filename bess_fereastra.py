@@ -338,6 +338,7 @@ class AplicatieOferte:
         if c and c.get("test"):
             self._sterge_calcul(c, arata_erori=False)
         shutil.rmtree(os.path.join(FOLDER_OFERTE, FOLDER_TESTE), ignore_errors=True)
+        inchide_excel()
         self.root.destroy()
 
     def _ok_genereaza(self):

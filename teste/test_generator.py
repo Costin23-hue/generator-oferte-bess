@@ -476,6 +476,35 @@ class CommissioningBaterie(unittest.TestCase):
         self.assertIsNone(g.commissioning_baterie({"com_unit": [0, 0]}, 2))
 
 
+class Viteza(unittest.TestCase):
+    def test_cache_date_pricing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pricing = os.path.join(tmp, "Pricing.xlsx")
+            open(pricing, "w").write("v1")
+            citiri = []
+            with mock.patch.object(g, "FISIER_CACHE_DATE", os.path.join(tmp, "c.pkl")), \
+                    mock.patch.object(g, "cale_pricing", lambda: pricing), \
+                    mock.patch.object(g, "_citeste_date", lambda s: citiri.append(s) or {"x": len(citiri)}):
+                self.assertEqual(g.incarca_date(), {"x": 1})
+                self.assertEqual(g.incarca_date(), {"x": 1})           # din cache, fără recitire
+                open(pricing, "w").write("v2 modificat")
+                self.assertEqual(g.incarca_date(), {"x": 2})           # fișier schimbat -> recitit
+            self.assertEqual(len(citiri), 2)
+
+    def test_excel_ramane_deschis_pe_windows(self):
+        app = mock.MagicMock()
+        with mock.patch.object(g, "xw") as xw, mock.patch.object(g.sys, "platform", "win32"):
+            xw.App.return_value = app
+            g._EXCEL["app"] = None
+            self.assertIs(g.excel_app(), app)
+            self.assertIs(g.excel_app(), app)
+            self.assertEqual(xw.App.call_count, 1)
+            g.elibereaza_excel(app)
+            app.quit.assert_not_called()
+            g.inchide_excel()
+            app.quit.assert_called_once()
+
+
 class FoiInSetari(unittest.TestCase):
     """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
 

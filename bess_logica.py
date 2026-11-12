@@ -128,10 +128,56 @@ def citeste_copie(sursa, foi):
             return {foaie: pd.read_excel(xls, sheet_name=foaie) for foaie in foi}
 
 
+def _amprenta(*cai):
+    """(cale, data modificării, mărime) pentru fiecare fișier: dacă nu s-a schimbat nimic, folosim datele din cache."""
+    rezultat = []
+    for c in cai:
+        try:
+            st = os.stat(c)
+            rezultat.append((os.path.abspath(c), st.st_mtime, st.st_size))
+        except (OSError, TypeError):
+            rezultat.append((c, None, None))
+    return rezultat
+
+
+FISIER_CACHE_DATE = os.path.join(os.path.dirname(FISIER_SETARI), "cache_date.pkl")
+
+
 def incarca_date():
-    """Citește toate fișierele de pricing și returnează un dicționar de DataFrame-uri."""
+    """Datele din Pricing + setări (PCS, specificații). Dacă fișierele nu s-au schimbat de la ultima citire, se iau
+    din cache (pornire mult mai rapidă); altfel se citesc din nou."""
+    import pickle
     sursa = cale_pricing()
-    foi = citeste_copie(sursa, "*")
+    amprenta = _amprenta(sursa, FISIER_SETARI_GENERATOR, FISIER_PCS, FISIER_SPECS)
+    try:
+        with open(FISIER_CACHE_DATE, "rb") as f:
+            cache = pickle.load(f)
+        if cache.get("amprenta") == amprenta and cache.get("versiune") == 1:
+            return cache["date"]
+    except Exception:
+        pass
+    date = _citeste_date(sursa)
+    try:
+        os.makedirs(os.path.dirname(FISIER_CACHE_DATE), exist_ok=True)
+        with open(FISIER_CACHE_DATE + ".tmp", "wb") as f:
+            pickle.dump({"amprenta": amprenta, "versiune": 1, "date": date}, f)
+        os.replace(FISIER_CACHE_DATE + ".tmp", FISIER_CACHE_DATE)
+    except Exception:
+        pass
+    return date
+
+
+def _citeste_date(sursa):
+    """Citește fișierele de pricing (doar foile folosite) și returnează un dicționar de DataFrame-uri."""
+    with tempfile.TemporaryDirectory() as tmp:
+        copie = os.path.join(tmp, os.path.basename(sursa))
+        shutil.copy2(sursa, copie)
+        with pd.ExcelFile(copie) as xls:
+            toate = list(xls.sheet_names)
+            folosite = [f for f in toate if f in (FOAIE_BATERIE, FOAIE_SKID, "Auxiliary Transformer")
+                        or FOAIE_SKID_POC_CONTINE in f.lower()]
+            foi = {f: pd.read_excel(xls, sheet_name=f) for f in folosite}
+    foi.update({f: None for f in toate if f not in foi})            # numele celorlalte foi (pentru mesaje)
     lipsa = [f for f in (FOAIE_BATERIE, FOAIE_SKID, "Auxiliary Transformer") if f not in foi]
     if lipsa:
         raise ValueError(f"Fișierul de prețuri citit nu are foile: {', '.join(lipsa)}.\n\n"

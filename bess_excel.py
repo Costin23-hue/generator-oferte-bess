@@ -130,6 +130,46 @@ def nume_calcul(intrari, acum):
         intrari["versiune"], acum.strftime("%Y-%m-%d_%H.%M.%S"))
 
 
+_EXCEL = {"app": None}
+
+
+def excel_app():
+    """Instanța Excel folosită la calcule. Pe Windows rămâne deschisă (ascunsă) între calcule: pornirea lui Excel
+    durează câteva secunde la fiecare calcul. Se închide cu inchide_excel() la ieșirea din program."""
+    app = _EXCEL["app"]
+    if app is not None:
+        try:
+            app.books                                     # încă trăiește?
+            return app
+        except Exception:
+            _EXCEL["app"] = None
+    app = xw.App(visible=(sys.platform == "darwin"), add_book=False)
+    if sys.platform == "win32":
+        _EXCEL["app"] = app
+    return app
+
+
+def elibereaza_excel(app):
+    """După calcul: pe Windows instanța rămâne pentru calculul următor; pe Mac (Excel-ul utilizatorului) se închide
+    doar dacă nu mai are alte fișiere deschise."""
+    if app is None or _EXCEL["app"] is app:
+        return
+    try:
+        if sys.platform != "darwin" or not app.books:
+            app.quit()
+    except Exception:
+        pass
+
+
+def inchide_excel():
+    app, _EXCEL["app"] = _EXCEL["app"], None
+    if app is not None:
+        try:
+            app.quit()
+        except Exception:
+            pass
+
+
 def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, branduri_bat=(), branduri_skid=()):
     """Completează template-ul, recalculează, salvează calculul într-un fișier nou. Returnează rezultatele."""
     if xw is None:
@@ -139,7 +179,7 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
     wb = None
     try:
         # Pe Mac există o singură instanță Excel (a utilizatorului): nu o ascundem și nu o închidem dacă are alte fișiere
-        app_xl = xw.App(visible=(sys.platform == "darwin"), add_book=False)
+        app_xl = excel_app()
         wb = app_xl.books.open(os.path.abspath(FISIER_EXCEL_TEMPLATE))
         sh = wb.sheets["Sheet1"]
 
@@ -158,11 +198,7 @@ def calculeaza_in_excel(intrari, baterie, nr_baterii, skid, trafo, folder, brand
                 wb.close()
         except Exception:
             pass
-        try:
-            if app_xl is not None and (sys.platform != "darwin" or not app_xl.books):
-                app_xl.quit()
-        except Exception:
-            pass
+        elibereaza_excel(app_xl)
 
 
 # ---------------- același calcul, prin Excel Online (Microsoft 365) ----------------

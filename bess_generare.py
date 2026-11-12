@@ -416,7 +416,7 @@ def transforma_calcul_test(calcul, intrari, nume_existente=(), info_drive=None):
         if xw is None:
             raise RuntimeError("Excel nu e instalat (sau lipsește biblioteca xlwings).")
         shutil.copy2(calcul["cale_excel"], cale)
-        app_xl = xw.App(visible=(sys.platform == "darwin"), add_book=False)
+        app_xl = excel_app()
         wb = None
         try:
             wb = app_xl.books.open(cale)
@@ -429,10 +429,9 @@ def transforma_calcul_test(calcul, intrari, nume_existente=(), info_drive=None):
             try:
                 if wb is not None:
                     wb.close()
-                if sys.platform != "darwin" or not app_xl.books:
-                    app_xl.quit()
             except Exception:
                 pass
+            elibereaza_excel(app_xl)
     rez["cale_excel"] = cale
     return {"nume": nume_oferta(intrari), "folder": folder, "rez": rez, "cale_excel": cale,
             "online": calcul.get("online")}
