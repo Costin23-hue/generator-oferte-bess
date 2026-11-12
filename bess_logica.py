@@ -168,7 +168,8 @@ def incarca_date():
 COLOANE_PRICING = [
     ("bat", FOAIE_BATERIE, [(BAT_COL_BRAND, "Brand baterie", "text"), (BAT_COL_TYPE, "Model (Type)", "text"),
                             (BAT_COL_CAP, "Capacitate (MWh)", "numar"), (BAT_COL_PRET_DAP, "Preț DAP / MWh", "numar"),
-                            (BAT_COL_PRET, "Preț DDP / MWh", "numar"), (BAT_COL_TRANSPORT, "Transport", "numar")]),
+                            (BAT_COL_PRET, "Preț DDP / MWh", "numar"), (BAT_COL_TRANSPORT, "Transport", "numar"),
+                            (BAT_COL_COM[0], "Commissioning 1 container", "numar")]),
     ("skid", FOAIE_SKID, [(SKID_COL_BRAND, "Brand skid", "text"), (SKID_COL_TYPE, "Model (Type)", "text"),
                           (SKID_COL_PRET, "Preț", "numar"),
                           (SKID_COL_TRANSPORT, "Transport", "numar"), (SKID_COL_COM, "Commissioning", "numar")]),
@@ -177,7 +178,7 @@ COLOANE_PRICING = [
       (SKID_COL_PRET, "Preț", "numar"), (SKID_COL_TRANSPORT, "Transport", "numar")]),
 ]
 # Texte care trebuie să apară în antetul unor coloane (verificare sigură, independentă de istoric)
-ANTETE_OBLIGATORII = {("bat", BAT_COL_TYPE): "type", ("bat", BAT_COL_PRET_DAP): "dap", ("bat", BAT_COL_PRET): "ddp",
+ANTETE_OBLIGATORII = {("bat", BAT_COL_COM[0]): "commis", ("bat", BAT_COL_TYPE): "type", ("bat", BAT_COL_PRET_DAP): "dap", ("bat", BAT_COL_PRET): "ddp",
                       ("skid", SKID_COL_TYPE): "type", ("skid_poc", SKID_COL_TYPE): "type"}
 
 
@@ -452,11 +453,20 @@ def alege_baterie(df_bat, idx, incoterm="DDP"):
         "incoterm": incoterm,
         "coloana_pret": litera_coloana(i_pret),
         "transport": numar(rand.iloc[BAT_COL_TRANSPORT]),   # coloana J
+        "com_unit": [numar(rand.iloc[i]) for i in BAT_COL_COM if i < len(rand)],   # K..O: 1, 2, 3, 4, 5+ containere
         "garantie": text_ani(rand.iloc[BAT_COL_GARANTIE]) if len(rand) > BAT_COL_GARANTIE else "",  # coloana U
         "rand_excel": idx + 2,
         "data": data.strftime("%d-%b-%y") if data is not None else "fără dată",
         "data_cotatie": data,
     }
+
+
+def commissioning_baterie(baterie, nr_baterii):
+    """Commissioning / baterie din Pricing, după numărul de containere (1, 2, 3, 4, 5+); None = nu e în Pricing."""
+    com = [c for c in (baterie.get("com_unit") or [])]
+    if not com or not any(com):
+        return None
+    return com[min(max(int(nr_baterii), 1), len(com)) - 1]
 
 
 def e_baterie_rack(baterie_text):

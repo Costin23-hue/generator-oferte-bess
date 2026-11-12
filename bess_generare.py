@@ -178,7 +178,8 @@ def ore_baterie(model):
 def cost_estimativ(p):
     """Costul de achiziție al variantei celei mai ieftine: baterii (+ transport) + skid (+ transport) + trafo extern."""
     b, o = p["baterie"], p["lista"][0]
-    return (p["nr_baterii"] * (b["cap"] * b["pret"] + b["transport"])
+    return (p["nr_baterii"] * (b["cap"] * b["pret"] + b["transport"]
+                               + (commissioning_baterie(b, p["nr_baterii"]) or 0))
             + o["cost_total"] + o["nr"] * (o["transport"] + o["com"]))
 
 

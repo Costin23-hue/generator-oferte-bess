@@ -4,13 +4,15 @@ import pandas as pd
 
 COLOANE_BATERIE = (["Date", "Supplier", "Brand", "Type", "Capacity MWh", "FOB", "Tax",
                     "Price / MWh with taxes (DAP)", "Price / MWh FOB with taxes and DDP from DAP Tax",
-                    "Transport"] + [f"Col{i}" for i in range(10, 20)] + ["Warranty"])
+                    "Transport"] + [f"Commisioning {i} containers/ unit" for i in range(1, 6)]
+                   + [f"Col{i}" for i in range(15, 20)] + ["Warranty"])
 COLOANE_SKID = (["Date", "Supplier", "Brand", "Type", "Power", "Price", "Transport", "Commissioning"]
                 + [f"Col{i}" for i in range(8, 12)] + ["Warranty"])
 
 
 def _baterie(data, brand, tip, cap, dap, ddp, transport, garantie=15):
-    return [data, "-", brand, tip, cap, 0, 0, dap, ddp, transport] + [None] * 10 + [garantie]
+    return [data, "-", brand, tip, cap, 0, 0, dap, ddp, transport] + [6000, 6000, 5500, 5000, 4000] + [None] * 5 \
+        + [garantie]
 
 
 def _skid(brand, tip, putere, pret, transport, com, garantie=5):

@@ -254,6 +254,8 @@ CAMPURI_SKID_MANUAL = [
 BAT_COL_DATA, BAT_COL_BRAND, BAT_COL_TYPE, BAT_COL_CAP, BAT_COL_PRET, BAT_COL_TRANSPORT = 0, 2, 3, 4, 8, 9
 BAT_COL_PRET_DAP = 7                     # coloana H = 'Price / MWh ... with taxes (DAP)'
 BAT_COL_GARANTIE = 20                    # coloana U = ani garanție baterie
+# Commissioning baterie / unitate, după câte containere sunt în proiect: coloanele K..O = 1, 2, 3, 4, 5+ containere
+BAT_COL_COM = (10, 11, 12, 13, 14)
 SKID_COL_BRAND, SKID_COL_TYPE, SKID_COL_POWER = 2, 3, 4
 SKID_COL_PRET, SKID_COL_TRANSPORT, SKID_COL_COM = 5, 6, 7
 SKID_COL_GARANTIE = 12                   # coloana M = ani garanție skid / PCS

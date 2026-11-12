@@ -1303,6 +1303,9 @@ class AplicatieOferte:
                   f"{baterie['pret']:,.2f} $/MWh (cotație {baterie['data']}, "
                   f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"
                   + avertisment_cotatie(baterie.get("data_cotatie"), "bateriei")))
+        com_bat = commissioning_baterie(baterie, nr_baterii)
+        if com_bat is not None:
+            txt += f"\nCommissioning baterii: {nr_baterii} x {bani_eu(com_bat, 0)} $ = {bani_eu(nr_baterii * com_bat, 0)} $"
         kva_bat = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
         txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA"
                 + (" + consum skid după putere (vezi la fiecare skid); " if CONSUM_SKID_IN_NECESAR else

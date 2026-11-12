@@ -31,6 +31,7 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
 - Trafo aux extern: cât mai puține bucăți (1 x 1250 în loc de 3 x 450), apoi cel mai ieftin; trafo aux inclus în skid se scade.
 - EMS după capacitatea OFERTATĂ (prag 15 MWh: 3500 / 6500 USD), nu cea cerută.
 - Limitare prin EMS: skidul poate fi peste evacuarea aprobată, în prezentare „6 (limited by EMS to 5,85)”.
+- Commissioning baterie: din Pricing (Battery 2027 delivery, K..O = 1,2,3,4,5+ containere) / unitate x nr. baterii -> G11.
 - Rezervă de preț (% baterie / skid) în tab-ul Componente manuale; în Excel ca formulă.
 - „Putere max. admisă (MW)”: skidurile peste ea nu se propun (din ATR = Pi stocare).
 - Flux: calcul Excel -> tab „Verificare calcul” -> OK -> PPTX + PDF; „test/test” = calcul de probă, se șterge

@@ -74,6 +74,9 @@ def completeaza_calcul(foaie, intrari, baterie, nr_baterii, skid, trafo, acum, b
     foaie.scrie("A6:D6", [[skid["tip"], skid["putere_unit"], skid["nr"], pret_skid]])   # B8 = B6 x C6
     foaie.scrie("F6", skid["transport"])
     foaie.scrie("G12", f"={skid['com']}*C6")
+    com_bat = commissioning_baterie(baterie, nr_baterii)      # din Pricing, după nr. de containere
+    if com_bat is not None:
+        foaie.scrie("G11", f"={com_bat}*C5")
 
     # Trafo auxiliar extern: nr. bucăți (C7 = B21) îl calculează Excelul, în blocul 'CALCUL TRAFO AUXILIAR'.
     # B19 = kVA de acoperit cu trafo extern (necesar baterii + skiduri minus trafo-ul aux din skid).

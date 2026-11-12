@@ -462,6 +462,20 @@ class IstoricSiComparatie(unittest.TestCase):
         self.assertEqual(p["lista"][0]["data_cotatie"].year, 2026)
 
 
+class CommissioningBaterie(unittest.TestCase):
+    def test_dupa_nr_de_containere(self):
+        date = date_test()
+        for i, v in enumerate((9000, 7000, 6000, 5500, 4000)):
+            date["bat"].iloc[:, 10 + i] = v
+        b = g.lista_baterii(date["bat"])
+        p = g.pregateste_oferta(date, b, intrari_test(), JINKO_2H, "DDP", "Kehua", None, None)
+        self.assertEqual(p["nr_baterii"], 4)
+        self.assertEqual(g.commissioning_baterie(p["baterie"], 4), 5500)
+        self.assertEqual(g.commissioning_baterie(p["baterie"], 1), 9000)
+        self.assertEqual(g.commissioning_baterie(p["baterie"], 9), 4000)      # 5 sau mai multe
+        self.assertIsNone(g.commissioning_baterie({"com_unit": [0, 0]}, 2))
+
+
 class FoiInSetari(unittest.TestCase):
     """PCS și specificațiile ca foi în 'Setari generator.xlsx' (formulele calculate de program)."""
 
