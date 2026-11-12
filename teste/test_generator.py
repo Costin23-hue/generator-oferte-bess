@@ -805,6 +805,26 @@ class CitireATR(unittest.TestCase):
         self.assertEqual(r["tip"], "Aviz de amplasament")
         self.assertIn("nu un ATR", " ".join(r["avertismente"]))
 
+    def test_conditii_racordare_polonia(self):
+        text = ("PGE Dystrybucja S.A. Condiții de racordare nr. 25-G0/WP/00001 WP-3 (model 01.10.2019) "
+                "Varșovia, 13-03-2025 FIRMA TEST Sp. z o.o. ul. X 1 Condiții de racordare nr. 25-G0/WP/00001 pentru un "
+                "sistem de stocare a energiei, la rețeaua de distribuție cu tensiunea nominală de 15 kV Denumirea "
+                "obiectivului racordat la rețea: Magazyn Test. Putere maximă: 1,84000 MW. Amplasament: comuna X, "
+                "localitatea Y, ul. Z 10. 3 Putere aprobată evacuată (injectată) – 1,84000 MW (la o putere instalată "
+                "de 2,00 MW pentru sistemul de stocare). 4 Putere aprobată absorbită – 0,10000 MW " + "text " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual((r["operator"], r["nr"], r["data"], r["beneficiar"]),
+                         ("PGE Dystrybucja", "25-G0/WP/00001", "13.03.2025", "FIRMA TEST Sp. z o.o."))
+        self.assertEqual((r["poc_kv"], r["evac_kw"], r["abs_kw"], r["mw"], r["mw_max"]), (15, 1840, 100, 1.84, 2.0))
+
+    def test_cerinte_asigurator(self):
+        text = ("INFORMACJA TECHNICZNA Magazyny energii zewnętrzne. Magazyny energii należy podzielić na zespoły "
+                "magazynów o mocy nie przekraczającej 10 MWh, co najmniej 10 m od obiektów, REI 120. " + "tekst " * 60)
+        r = g.citeste_atr_text(text)
+        self.assertEqual(r["tip"], "Cerințe asigurator / siguranță")
+        self.assertIn("maximum 10 MWh", " ".join(r["avertismente"]))
+        self.assertNotIn("mwh", r)
+
     def test_caiet_de_sarcini(self):
         text = ("ANEXA 1 - SPECIFICAȚIA TEHNICĂ Element Descriere Denumirea obiectivului de investiții BESS 4,2 MW / "
                 "8,40 MWh, integrat la CEF TEST Beneficiar / Achizitor (Proprietarul) FIRMA TEST S.R.L. Amplasament "

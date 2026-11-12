@@ -36,6 +36,43 @@ def _cauta(model, text, flags=re.I | re.S):
     return m.group(1).strip() if m else None
 
 
+def _citeste_conditii_pl(plat, r):
+    """Condiții de racordare din Polonia (PGE, Enea, Tauron, Energa, Stoen): originalul polonez sau traducerea."""
+    mw = lambda model: (lambda v: _nr_ro(v) * 1000 if v else None)(_cauta(model + r"\s*(\d+(?:,\d+)?)\s*MW", plat))
+    for nume in ("PGE Dystrybucja", "Enea Operator", "Tauron Dystrybucja", "Energa-Operator", "Stoen Operator"):
+        if re.search(nume.replace("-", r"[\s-]+").replace(" ", r"\s+"), plat, re.I):
+            r["operator"] = nume
+            break
+    r["nr"] = _cauta(r"(?:Condi[țţt]ii\s+de\s+racordare|Warunki\s+przy[łl][ąa]czenia)\s+nr\.?\s*([\w/.-]+\w)", plat)
+    m = re.search(r"[A-Za-zăâîșțłśźżó],\s*(\d{2})[-.](\d{2})[-.](\d{4})\b", plat[:1500]) or \
+        re.search(r"\b(\d{2})[-.](\d{2})[-.](\d{4})\b", plat[:1500])            # 'Varșovia, 13-03-2025'
+
+    if m:
+        r["data"] = f"{m[1]}.{m[2]}.{m[3]}"
+    firme = re.findall(r"([A-ZĄĆĘŁŃÓŚŹŻĂÂÎȘȚ][\w .&'-]{2,60}?\s+Sp\.\s*z\s*o\.\s*o\.)", plat)
+    r["beneficiar"] = next((f.strip() for f in firme if not re.search(r"Dystrybucja|Operator", f)), None)
+    r["obiectiv"] = _cauta(r"(?:Denumirea\s+obiectivului[^:]{0,30}|Nazwa\s+obiektu[^:]{0,30}):\s*(.{3,120}?)\.\s", plat)
+    r["amplasament"] = _cauta(r"(?:Amplasament|Lokalizacja|Miejsce\s+lokalizacji):\s*(.{3,150}?),\s*(?:ul\.|str\.|parcel|dz)",
+                              plat)
+    kv = _cauta(r"(?:tensiunea\s+nominal[ăa]\s+de|napi[ęe]ciu\s+znamionowym)\s+(\d+(?:,\d+)?)\s*kV", plat)
+    if kv:
+        r["poc_kv"] = _nr_ro(kv)
+    r["evac_kw"] = (mw(r"Putere\s+aprobat[ăa]\s+evacuat[ăa][^–-]{0,20}[–-]")
+                    or mw(r"[Mm]oc\s+przy[łl][ąa]czeniowa[^0-9]{0,60}?wprowadz\w*[^0-9]{0,30}")
+                    or mw(r"Putere\s+maxim[ăa]:") or mw(r"Moc\s+maksymalna:"))
+    r["abs_kw"] = (mw(r"Putere\s+aprobat[ăa]\s+absorbit[ăa]\s*[–-]")
+                   or mw(r"[Mm]oc\s+przy[łl][ąa]czeniowa[^0-9]{0,60}?pob\w*[^0-9]{0,30}"))
+    pi = _cauta(r"putere\s+instalat[ăa]\s+de\s+(\d+(?:,\d+)?)\s*MW\s+pentru\s+sistemul\s+de\s+stocare", plat) or \
+        _cauta(r"moc\w*\s+zainstalowan\w*\s+(?:magazynu\s+energii\s+)?(\d+(?:,\d+)?)\s*MW", plat)
+    if pi:
+        r["pi_is_kw"] = _nr_ro(pi) * 1000
+    cap = _cauta(r"(?:pojemno[śs][ćc]\w*|capacitat\w*)[^0-9]{0,40}(\d+(?:,\d+)?)\s*MWh", plat)
+    if cap:
+        r["mwh"] = _nr_ro(cap)
+    for k in [k for k, v in r.items() if v is None]:
+        del r[k]
+
+
 def _citeste_caiet_sarcini(plat, r):
     """Caiet de sarcini / specificație tehnică (licitații): obiectiv, beneficiar, amplasament, puterea instalată
     minimă (AC), capacitatea, evacuarea aprobată (din ATR-ul citat), trafo minim, invertoare string."""
@@ -87,12 +124,29 @@ def citeste_atr_text(text):
         return r
     plat = re.sub(r"\s+", " ", text)
 
-    r["tip"] = ("Aviz de amplasament" if re.search(r"AVIZ\s+DE\s+AMPLASAMENT", plat[:3000], re.I)
+    r["tip"] = ("Condiții de racordare (Polonia)" if re.search(
+                    r"Condi[țţt]ii\s+de\s+racordare\s+nr|Warunki\s+przy[łl][ąa]cz|PGE\s+Dystrybucja|Enea\s+Operator|"
+                    r"Tauron\s+Dystrybucja|Energa[\s-]+Operator|Stoen\s+Operator", plat[:4000], re.I)
+                else "Cerințe asigurator / siguranță" if re.search(r"INFORMACJA\s+TECHNICZNA|Magazyny\s+energii\s+zewn",
+                                                                    plat[:2000], re.I)
+                else "Aviz de amplasament" if re.search(r"AVIZ\s+DE\s+AMPLASAMENT", plat[:3000], re.I)
                 else "Aviz tehnic de racordare" if re.search(r"AVIZ\s+TEHNIC\s+DE\s+RACORDARE", text, re.I)
                 else "Studiu de soluție" if re.search(r"studiu\w*\s+de\s+solu", plat, re.I)
                 else "Caiet de sarcini" if re.search(r"SPECIFICA[ȚŢT]IA\s+TEHNIC|Technical\s+Specification|"
                                                      r"caiet\w*\s+de\s+sarcini", plat, re.I)
                 else "Schemă de stație" if re.search(r"Schema\s+normal", plat, re.I) else "document")
+    if r["tip"] == "Cerințe asigurator / siguranță":
+        av.append("E un document de cerințe de siguranță (asigurator), nu un ATR: nu conține puteri aprobate.")
+        for model, nota in ((r"(\d+)\s*MWh\b.{0,80}?|zesp\w+\s+magazyn\w+\s+o\s+mocy\s+nie\s+przekraczaj\w+\s+(\d+)\s*MWh",
+                             "grupuri de baterii de maximum {} MWh"),
+                            (r"co\s+najmniej\s+(\d+)\s*m\s+od", "distanță minimă {} m față de alte obiecte"),
+                            (r"(REI\s*\d+)", "sau perete antifoc {}")):
+            m = re.search(model, plat, re.I)
+            if m and any(m.groups()):
+                av.append("Cerință: " + nota.format(next(g for g in m.groups() if g)) + ".")
+        return r
+    if r["tip"] == "Condiții de racordare (Polonia)":
+        _citeste_conditii_pl(plat, r)
     if r["tip"] == "Aviz de amplasament":
         av.append("E un aviz de amplasament, nu un ATR: nu conține puterea aprobată. Puterea și capacitatea "
                   "se iau din cererea clientului (ATR-ul se cere ulterior).")

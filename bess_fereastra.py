@@ -873,6 +873,8 @@ class AplicatieOferte:
             pune("Capacitate (MWh):", nr_eu(r["mwh"]).replace(".", ""))
         if r.get("beneficiar"):
             pune("Client:", r["beneficiar"])
+        if "Polonia" in (r.get("tip") or "") and "Poland" in self.combo_tara["values"]:
+            self.combo_tara.set("Poland")                  # foaia Poland din BESS_Proposals
         if r.get("amplasament"):
             pune("Locație:", re.sub(r"(?i)^jude[țţt]ul\s+", "", r["amplasament"]).replace(", -", ",").strip()
                  + ", " + self.combo_tara.get())
