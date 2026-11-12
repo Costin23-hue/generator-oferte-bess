@@ -7,6 +7,13 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
   Fără explicații lungi/liste de verificări (testează el). Nu afișa în chat output mare (base64, fișiere întregi):
   redirecționează în fișier și citește doar ce trebuie.
 
+## Structura codului
+- `generator_oferte_bess.py` = importuri + CONFIGURARE (constante/setări) + pornire; încarcă cu exec, în ACELAȘI
+  spațiu de nume, părțile din `MODULE_PROGRAM`: bess_setari (setări, curs, auto-update), bess_logica (Pricing, baterii,
+  skiduri, aux), bess_excel, bess_prezentare (PPTX), bess_drive (Graph, BESS_Proposals), bess_generare (calcul/finalizare
+  ofertă), bess_atr (cititor ATR), bess_motor (Power Apps), bess_fereastra (Tkinter). Fișier nou -> și în FISIERE_PROGRAM.
+- În bess_*.py nu se fac importuri (sunt în fișierul principal); testele folosesc `g = generator_oferte_bess`.
+
 ## Reguli de lucru
 - Nu se trimite nicio ofertă pe e-mail. Nimic nu se scrie în BESS_Proposals fără OK-ul utilizatorului.
 - Repository-ul e PUBLIC: fără prețuri reale, clienți, ATR-uri sau date din Pricing în cod/teste (teste = date inventate).

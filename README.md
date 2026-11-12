@@ -63,7 +63,8 @@ sincronizat care se termină cu `Purchasing Prices Update_BESS`.
 
 | Fișier | Rol |
 |---|---|
-| `generator_oferte_bess.py` | programul (Windows și Mac) |
+| `generator_oferte_bess.py` | programul (Windows și Mac): configurarea + pornirea; încarcă părțile `bess_*.py` |
+| `bess_setari.py`, `bess_logica.py`, `bess_excel.py`, `bess_prezentare.py`, `bess_drive.py`, `bess_generare.py`, `bess_atr.py`, `bess_motor.py`, `bess_fereastra.py` | părțile programului (setări, ofertare, Excel, PowerPoint, Drive, generare, ATR, motor, fereastră) |
 | `construieste_exe.py` | construiește `.exe` (Windows) / `.app` (Mac) cu PyInstaller |
 | `construieste_exe.bat` | construire locală pe Windows (Python 3.14) |
 | `construieste_app.command` | construire locală pe Mac |

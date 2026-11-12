@@ -23,7 +23,10 @@ echo "Instalez bibliotecile (pandas, openpyxl, python-pptx)..."
 
 mkdir -p "$FOLDER"
 cd "$FOLDER"
-curl -fsSL -o generator_oferte_bess.py "$SURSA/generator_oferte_bess.py"
+for F in generator_oferte_bess.py bess_setari.py bess_logica.py bess_excel.py bess_prezentare.py bess_drive.py \
+         bess_generare.py bess_atr.py bess_motor.py bess_fereastra.py; do
+  curl -fsSL -o "$F" "$SURSA/$F"
+done
 curl -fsSL -o "Porneste Generator Oferte.command" "$SURSA/Porneste%20Generator%20Oferte.command"
 chmod +x "Porneste Generator Oferte.command"
 

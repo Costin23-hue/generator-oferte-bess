@@ -63,6 +63,8 @@ def main():
             argumente += ["--collect-data", pachet, "--collect-binaries", pachet]
         for modul in module:
             argumente += ["--hidden-import", modul]
+    for parte in sorted(f for f in os.listdir(".") if f.startswith("bess_") and f.endswith(".py")):
+        argumente += ["--add-data", f"{parte}{os.pathsep}."]      # părțile programului, încărcate la pornire
     argumente.append(SCRIPT)
 
     PyInstaller.__main__.run(argumente)
