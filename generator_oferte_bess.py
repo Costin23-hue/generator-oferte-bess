@@ -246,6 +246,8 @@ BAT_COL_GARANTIE = 20                    # coloana U = ani garanție baterie
 SKID_COL_BRAND, SKID_COL_TYPE, SKID_COL_POWER = 2, 3, 4
 SKID_COL_PRET, SKID_COL_TRANSPORT, SKID_COL_COM = 5, 6, 7
 SKID_COL_GARANTIE = 12                   # coloana M = ani garanție skid / PCS
+SKID_COL_DATA = 0                        # coloana A = data cotației skidului
+ZILE_COTATIE_VECHE = 60                  # cotațiile mai vechi de atâtea zile sunt semnalate în previzualizare
 
 # Celule din Excelul de calcul citite pentru prezentare (extensie garanție, $/MWh pe an)
 CELULA_EXT_GAR_BAT = "K9"
@@ -285,6 +287,7 @@ SETARI_EDITABILE = [
     ("PCS_PE_BATERIE", "Câte PCS poate alimenta o baterie (ex. 1, 2)", "lista_intregi"),
     ("KVA_CONSUM_SKID", "Consum aux propriu / skid (până la MW = kVA)", "trepte"),
     ("TENSIUNE_BATERIE_V", "ATR: tensiunea nominală a bateriei pentru Ah -> MWh (tip din ATR = V)", "perechi"),
+    ("ZILE_COTATIE_VECHE", "Previzualizare: cotații mai vechi de atâtea zile sunt semnalate ⚠", "intreg"),
     ("CONSUM_SKID_IN_NECESAR", "Consumul skidului intră în necesarul aux (NU = skidul are trafo propriu separat)",
      "da_nu"),
     ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),
@@ -1072,6 +1075,7 @@ def alege_baterie(df_bat, idx, incoterm="DDP"):
         "garantie": text_ani(rand.iloc[BAT_COL_GARANTIE]) if len(rand) > BAT_COL_GARANTIE else "",  # coloana U
         "rand_excel": idx + 2,
         "data": data.strftime("%d-%b-%y") if data is not None else "fără dată",
+        "data_cotatie": data,
     }
 
 
@@ -1275,6 +1279,7 @@ def gaseste_skiduri(date, mw, nr_baterii, brand, nr_fix=None, baterie_text="", k
             "conexiune": conexiune,
             "putere_pcs": numar(skid.get("PCS power")),                         # din PCS - MV skid.xlsx
             "garantie": text_ani(skid.get(c_gar)) if c_gar else "",            # coloana M
+            "data_cotatie": parseaza_data(skid.iloc[SKID_COL_DATA]) if len(skid) > SKID_COL_DATA else None,
         })
         calcul_aux(optiuni[-1], aux_inclus_skid(skid, nume), nr_baterii, kva_baterie, forteaza_trafo, trafo_pricing)
 
@@ -1339,6 +1344,29 @@ def text_aux(o):
     else:
         text += "nu e nevoie de trafo extern"
     return text
+
+
+def zile_vechime(data, acum=None):
+    """Câte zile are cotația (None dacă nu are dată)."""
+    if data is None:
+        return None
+    try:
+        return ((acum or datetime.now()) - data).days
+    except TypeError:
+        return None
+
+
+def avertisment_cotatie(data, ce):
+    """'⚠ cotația skidului are 75 de zile' dacă e mai veche de ZILE_COTATIE_VECHE."""
+    zile = zile_vechime(data)
+    return f"  ⚠ cotația {ce} are {zile} de zile" if zile is not None and zile > ZILE_COTATIE_VECHE else ""
+
+
+def procent_fata_de(cost, minim):
+    """'+3,2%' față de cea mai ieftină variantă ('cea mai ieftină' pentru ea)."""
+    if not minim or cost - minim < 0.5:
+        return "cea mai ieftină"
+    return f"+{nr_eu(round((cost / minim - 1) * 100, 1))}%"
 
 
 def descriere_skid(o, mw=None):
@@ -2818,7 +2846,8 @@ def pregateste_oferta(date, baterii_map, intrari, model_baterie, incoterm, brand
             raise ValueError("Auto: nicio baterie din listă nu se potrivește proiectului.\n- " + "\n- ".join(motive_auto))
         variante.sort(key=lambda v: v[0])
         p = variante[0][2]
-        p["auto_comparatie"] = [f"{model}: {bani_eu(cost, 0)} $" for cost, model, _ in variante]
+        p["auto_comparatie"] = [f"{model}: {bani_eu(cost, 0)} $ ({procent_fata_de(cost, variante[0][0])})"
+                                for cost, model, _ in variante]
         p["auto_excluse"] = motive_auto
         return p
     if model_baterie == OPTIUNE_MANUALA_BATERIE:
@@ -4739,7 +4768,7 @@ class AplicatieOferte:
             "cost": round(r["rez"].get("cost", 0), 2), "po": "W",
         }
 
-    def dialog_tabel(self):
+    def dialog_tabel(self, selecteaza_ultima=False):
         """Lista ofertelor generate și netrecute; cea aleasă se trece în BESS_Proposals."""
         if DRIVE is None:
             messagebox.showwarning("BESS_Proposals", "Tabelul se poate completa doar cu Drive-ul conectat.")
@@ -4809,6 +4838,9 @@ class AplicatieOferte:
         tk.Button(bf, text="Șterge din listă (test)", command=sterge).pack(side="left", padx=6)
         tk.Button(bf, text="Închide", command=win.destroy).pack(side="left", padx=6)
         reincarca()
+        if selecteaza_ultima and lista.size():
+            lista.selection_set("end")
+            lista.see("end")
 
     def _mod_trafo(self):
         """'fara' / True (forțat) / False (automat), după cele două bife."""
@@ -4986,7 +5018,8 @@ class AplicatieOferte:
                   f"{baterie['brand']}) -> baterii: {cost_bat:,.0f} $" if baterie.get("manual") else
                   f"\nPreț {baterie['incoterm']} (coloana {baterie['coloana_pret']}): "
                   f"{baterie['pret']:,.2f} $/MWh (cotație {baterie['data']}, "
-                  f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"))
+                  f"rând Excel {baterie['rand_excel']}) -> baterii: {cost_bat:,.0f} $"
+                  + avertisment_cotatie(baterie.get("data_cotatie"), "bateriei")))
         kva_bat = baterie.get("kva_aux") or kva_aux_baterie(baterie["cap"])
         txt += (f"\nConsum auxiliar: {nr_baterii} baterii x {kva_bat:g} kVA"
                 + (" + consum skid după putere (vezi la fiecare skid); " if CONSUM_SKID_IN_NECESAR else
@@ -5006,8 +5039,14 @@ class AplicatieOferte:
         if not exact:
             titlu += f"\nNiciun skid compatibil nu are exact {intrari['mw']:g} MW."
         ttk.Label(win, text=titlu, font=bold, justify="left").pack(padx=15, anchor="w")
+        minim = min((cost_bat + o["cost_total"] for o in optiuni), default=0)
         for i, o in enumerate(optiuni):
-            ttk.Radiobutton(win, variable=var, value=i, text=descriere_skid(o, intrari["mw"]))\
+            text = descriere_skid(o, intrari["mw"])
+            prima, rest = (text.split("\n", 1) + [""])[:2]
+            prima += (f"   [total achiziție {bani_eu(cost_bat + o['cost_total'], 0)} $, "
+                      f"{procent_fata_de(cost_bat + o['cost_total'], minim)}]"
+                      + avertisment_cotatie(o.get("data_cotatie"), "skidului"))
+            ttk.Radiobutton(win, variable=var, value=i, text=prima + ("\n" + rest if rest else ""))\
                 .pack(padx=25, pady=3, anchor="w")
 
         rezultat = {"v": None}
@@ -5115,6 +5154,10 @@ class AplicatieOferte:
             messagebox.showwarning("Gata, dar...", mesaj)
         else:
             messagebox.showinfo("Gata!", mesaj)
+        if DRIVE is not None and messagebox.askyesno(
+                "BESS_Proposals", "Treci acum oferta în BESS_Proposals?\n\n(Se deschide lista cu oferta selectată; "
+                                  "vezi datele înainte de confirmare.)"):
+            self.dialog_tabel(selecteaza_ultima=True)
 
 
 if __name__ == "__main__":
