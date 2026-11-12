@@ -451,6 +451,24 @@ def date_din_nume_oferta(nume):
             "Putere (MW):": m["mw"], "_versiune": int(m["v"])}
 
 
+def trafo_din_excel(tabel, trafo):
+    """Trafo-ul aux din Excelul de calcul (rândul 7: A7 nume, C7 bucăți), ca prezentarea să arate ce e în Excel
+    dacă l-ai schimbat de mână. Puterea: din nume ('400 KVA Aux transformer'), altfel B7 / C7. Fără Excel -> trafo."""
+    try:
+        rand = tabel[3]                                   # A4:I14 -> rândul 7
+        nume, cant = str(rand[0] or "").strip(), int(round(float(rand[2] or 0)))
+    except (TypeError, ValueError, IndexError):
+        return trafo
+    if cant <= 0:
+        return None                                       # trafo scos din Excel
+    if not nume or nume.lower() == "aux trafo":
+        return trafo
+    kva = putere_trafo(nume) or (float(rand[1]) / cant if isinstance(rand[1], (int, float)) else 0)
+    if not kva:
+        return trafo
+    return dict(trafo or {}, nume=nume, kva=kva, cant=cant)
+
+
 def nume_skid_prezentare(skid):
     """Numele skidului din prezentare: dacă are trafo aux inclus (coloana din setări) și numele nu-l scrie deja,
     se adaugă ' + AUX TRAFO 150kVA'."""
@@ -468,6 +486,7 @@ def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status
     if reciteste:
         status("Recitesc Excelul de calcul...")
         rez.update(citeste_rezultate(calcul))
+        trafo = trafo_din_excel(rez.get("tabel"), trafo)        # trafo-ul schimbat de mână în Excel (rândul 7)
     status("Populez prezentarea PowerPoint...")
     inlocuiri = {
         "[DATA]": datetime.now().strftime(FORMAT_DATA),

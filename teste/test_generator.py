@@ -196,6 +196,22 @@ class TrafoAux(unittest.TestCase):
         ales = g.alege_trafo(variante, 300)
         self.assertEqual((ales["kva"], ales["cant"]), (450, 1))   # la o bucată: cel mai ieftin care acoperă
 
+    def test_trafo_doar_exw_folosit_doar_fara_dap(self):
+        import pandas as pd
+        aux = pd.DataFrame({"Detail": ["450kVA 690V/400V TRAFO", "400 KVA Aux transformer"],
+                            "Price USD EXW Ankara": [21000, None], "Price USD DAP Romania": [None, 30000]})
+        ales = g.alege_trafo(g.variante_trafo(aux), 200)
+        self.assertEqual((ales["kva"], ales["pret"]), (400, 30000))       # nu 450 EXW (fără transport)
+        ales = g.alege_trafo(g.variante_trafo(aux.iloc[:1]), 200)
+        self.assertTrue(ales["exw"])                                       # doar EXW -> îl folosește
+
+    def test_trafo_schimbat_in_excel_apare_in_prezentare(self):
+        tabel = [["h"], [], [], ["400 KVA Aux transformer", 450, 1, 30000]]
+        t = g.trafo_din_excel(tabel, {"nume": "450kVA", "kva": 450, "cant": 1, "pret": 21000})
+        self.assertEqual((t["kva"], t["cant"], t["nume"]), (400, 1, "400 KVA Aux transformer"))
+        self.assertIsNone(g.trafo_din_excel([["h"], [], [], ["aux trafo", None, 0, 0]], {"kva": 450, "cant": 1}))
+        self.assertEqual(g.trafo_din_excel(None, {"kva": 450}), {"kva": 450})
+
     def test_trafo_cel_mai_ieftin_daca_setarea_e_nu(self):
         vechi = g.TRAFO_CAT_MAI_PUTINE
         g.TRAFO_CAT_MAI_PUTINE = False

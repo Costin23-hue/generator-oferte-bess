@@ -28,7 +28,8 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
 - Consum aux: doar bateriile, 50 kVA (<5,6 MWh) / 65 kVA. Skidul are trafo propriu separat pentru consumul lui
   (CONSUM_SKID_IN_NECESAR = NU; tabelul KVA_CONSUM_SKID 30/40/50/60 kVA rămâne pentru DA). Trafo-ul aux din numele
   skidului acoperă bateriile.
-- Trafo aux extern: cât mai puține bucăți (1 x 1250 în loc de 3 x 450), apoi cel mai ieftin; trafo aux inclus în skid se scade.
+- Trafo aux extern: doar trafo-uri cu preț DAP România (EXW Ankara = fără transport, doar dacă nu există DAP); cât mai
+  puține bucăți, apoi cel mai ieftin; trafo aux inclus în skid se scade. Prezentarea ia trafo-ul din Excel (A7/C7).
 - EMS după capacitatea OFERTATĂ (prag 15 MWh: 3500 / 6500 USD), nu cea cerută.
 - Limitare prin EMS: skidul poate fi peste evacuarea aprobată, în prezentare „6 (limited by EMS to 5,85)”.
 - Commissioning baterie: din Pricing (Battery 2027 delivery, K..O = 1,2,3,4,5+ containere) / unitate x nr. baterii -> G11.

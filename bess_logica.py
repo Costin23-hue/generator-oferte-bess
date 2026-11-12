@@ -774,7 +774,8 @@ def text_aux(o):
         text += ("fără trafo extern (exclus manual" +
                  (f"; ⚠ rămân neacoperiți {o['kva_lipsa']:g} kVA)" if o["kva_lipsa"] else ")"))
     elif o["trafo"]:
-        text += f"trafo extern: {o['trafo']['cant']} x {o['trafo']['nume']} = {o['trafo']['cost']:,.0f} $"
+        text += (f"trafo extern: {o['trafo']['cant']} x {o['trafo']['nume']} = {o['trafo']['cost']:,.0f} $"
+                 + (" ⚠ preț EXW Ankara, fără transport" if o["trafo"].get("exw") else ""))
     elif o.get("trafo_lipsa_din_pricing"):
         text += f"⚠ e nevoie de trafo extern ({o['kva_trafo']:g} kVA), dar nu e niciunul în Pricing"
     else:
@@ -892,8 +893,9 @@ def putere_trafo(detail):
 
 
 def variante_trafo(df_aux):
-    """Trafo-urile aux din Pricing: {'nume', 'kva', 'pret'}. Puterea din nume, prețul DAP (total, cu transport),
-    altfel EXW. Listă goală dacă nu există."""
+    """Trafo-urile aux din Pricing: {'nume', 'kva', 'pret', 'exw'}. Puterea din nume, prețul DAP România (cu transport).
+    Cele care au doar preț EXW Ankara (fără transport) se folosesc doar dacă niciun trafo DAP nu acoperă necesarul
+    (vezi alege_trafo), pentru că prețul EXW nu e comparabil cu DAP. Listă goală dacă nu există."""
     def coloana(text):
         return next((c for c in df_aux.columns if text in c.lower()), None)
     c_detail, c_dap, c_exw = coloana("detail"), coloana("dap"), coloana("exw")
@@ -905,9 +907,10 @@ def variante_trafo(df_aux):
         if TRAFO_FILTRU.lower() not in nume.lower():
             continue
         kva = putere_trafo(nume)
-        pret = (numar(rand[c_dap]) if c_dap else 0) or (numar(rand[c_exw]) if c_exw else 0)
-        if kva > 0 and pret > 0:
-            variante.append({"nume": nume, "kva": kva, "pret": pret})
+        dap = numar(rand[c_dap]) if c_dap else 0
+        exw = numar(rand[c_exw]) if c_exw else 0
+        if kva > 0 and (dap or exw) > 0:
+            variante.append({"nume": nume, "kva": kva, "pret": dap or exw, "exw": not dap})
     return variante
 
 
@@ -917,6 +920,8 @@ def alege_trafo(variante, kva_necesar):
     None dacă nu e nevoie de trafo (sau nu există niciunul în Pricing)."""
     if kva_necesar <= 0 or not variante:
         return None
+    dap = [v for v in variante if not v.get("exw")]
+    variante = dap or variante                            # EXW (fără transport) doar dacă nu există DAP
     optiuni = [dict(v, cant=math.ceil(kva_necesar / v["kva"])) for v in variante]
     for o in optiuni:
         o["cost"] = o["cant"] * o["pret"]
