@@ -171,6 +171,9 @@ KVA_CONSUM_SKID = [(2, 30), (5, 40), (7.5, 50), (10, 60)]
 # Skidul are trafo propriu, separat, pentru consumul lui (altul decât trafo-ul aux din numele lui, care rămâne pentru
 # baterii) -> consumul skidului NU intră în necesarul aux. True = se adună iar (regula veche).
 CONSUM_SKID_IN_NECESAR = False
+# ATR-uri cu capacitatea doar în Ah: MWh = Ah x tensiunea nominală a bateriei (V) / 1.000.000. Tensiunea depinde de
+# baterie: {text din tipul bateriei din ATR: V}, ex. {"LUNA2000": 1331.2}. Se completează în Setari generator.xlsx.
+TENSIUNE_BATERIE_V = {}
 # Trafo aux inclus în skid (kVA): coloana cu acest nume din 'PCS - MV skid.xlsx'; dacă lipsește, din numele
 # skidului ('... + AUX TRAFO 200kVA'); altfel skidul e considerat fără aux.
 # Necesar = baterii x kVA/baterie + skiduri x consum aux skid; ce nu acoperă skidurile se acoperă automat cu
@@ -281,6 +284,7 @@ SETARI_EDITABILE = [
     ("Skiduri și compatibilitate", None, None),
     ("PCS_PE_BATERIE", "Câte PCS poate alimenta o baterie (ex. 1, 2)", "lista_intregi"),
     ("KVA_CONSUM_SKID", "Consum aux propriu / skid (până la MW = kVA)", "trepte"),
+    ("TENSIUNE_BATERIE_V", "ATR: tensiunea nominală a bateriei pentru Ah -> MWh (tip din ATR = V)", "perechi"),
     ("CONSUM_SKID_IN_NECESAR", "Consumul skidului intră în necesarul aux (NU = skidul are trafo propriu separat)",
      "da_nu"),
     ("TRAFO_FILTRU", "Trafo aux: text obligatoriu în 'Detail' (gol = toate)", "text"),
@@ -3480,8 +3484,26 @@ def citeste_atr_text(text):
             av.append(f"Capacitatea diferă: {nr_eu(r['mwh'])} MWh în text, dar bateriile din tabel dau "
                       f"{m.group(1)} x {(dupa or m).group(1 if dupa else 2)}K = {nr_eu(r['mwh_baterii'])} MWh "
                       "(rack-uri scoase?). Verifică.")
+    mw_ref = (r.get("pi_is_kw") or r.get("evac_is_kw") or r.get("evac_kw") or 0) / 1000
+    if r.get("mwh_baterii") and mw_ref and r["mwh_baterii"] > mw_ref * ORE_MAX * 1.5:
+        if r.get("mwh") == r["mwh_baterii"]:
+            del r["mwh"]
+        del r["mwh_baterii"]                         # nr. de elemente = module / celule, nu containere
+    if r.get("capacitate_ah"):
+        tip_is = _cauta(r"Tip\s+IS(.{0,300})", plat) or ""
+        tensiune = next((v for k, v in TENSIUNE_BATERIE_V.items() if k.lower() in tip_is.lower()), None)
+        if tensiune:
+            r["mwh_din_ah"] = round(r["capacitate_ah"] * tensiune / 1e6, 3)
+            av.append(f"Capacitate din Ah: {nr_eu(r['capacitate_ah'])} Ah x {nr_eu(tensiune)} V = "
+                      f"{nr_eu(r['mwh_din_ah'])} MWh" + (f" (în text: {nr_eu(r['mwh'])} MWh)" if r.get("mwh") else "")
+                      + ".")
+            r["mwh"] = r["mwh_din_ah"]
+    if r.get("mwh") and mw_ref and r["mwh"] / mw_ref < ORE_MIN:
+        av.append(f"Capacitatea găsită ({nr_eu(r['mwh'])} MWh) e prea mică pentru {nr_eu(mw_ref)} MW: pare a unui "
+                  "singur container. Calculeaz-o din Ah (tensiunea bateriei, jos) sau ia-o din cererea clientului.")
     if "mwh" not in r:
-        av.append("Capacitatea (MWh) nu apare în ATR (doar Ah): ia-o din cererea clientului.")
+        av.append("Capacitatea (MWh) nu apare în ATR (doar Ah): calculeaz-o din Ah cu tensiunea bateriei (jos) sau "
+                  "ia-o din cererea clientului.")
     if r.get("mw_min"):
         av.append(f"Caietul de sarcini cere minimum {nr_eu(r['mw_min'])} MW instalați (AC)"
                   + (f", iar evacuarea aprobată e {nr_eu(r['evac_kw'] / 1000)} MW: skidurile trebuie să aibă "
@@ -4433,6 +4455,10 @@ class AplicatieOferte:
         self.btn_completeaza_atr = tk.Button(butoane, text="➡ Completează oferta cu aceste valori", state="disabled",
                                              command=self._completeaza_din_atr, **STIL_BUTON)
         self.btn_completeaza_atr.pack(side="left")
+        ttk.Label(butoane, text="   Tensiune baterie (V):").pack(side="left")
+        self.txt_tensiune_atr = ttk.Entry(butoane, width=8)
+        self.txt_tensiune_atr.pack(side="left", padx=4)
+        ttk.Button(butoane, text="Ah → MWh", command=self._mwh_din_ah).pack(side="left")
         cadru = ttk.Frame(tab)
         cadru.pack(fill="both", expand=True, padx=10, pady=8)
         self.txt_atr = tk.Text(cadru, height=24, wrap="word", font=("Consolas", 10))
@@ -4441,6 +4467,23 @@ class AplicatieOferte:
         bara.pack(side="right", fill="y")
         self.txt_atr.pack(side="left", fill="both", expand=True)
         self._atr = None
+
+    def _mwh_din_ah(self):
+        """MWh = Ah (din ATR) x tensiunea nominală a bateriei / 1.000.000."""
+        r = self._atr
+        if not r or not r.get("capacitate_ah"):
+            messagebox.showinfo("Ah → MWh", "Citește întâi un ATR care are capacitatea în Ah.")
+            return
+        try:
+            v = float(self.txt_tensiune_atr.get().replace(",", "."))
+        except ValueError:
+            messagebox.showwarning("Ah → MWh", "Scrie tensiunea nominală a bateriei în V (ex. 1331,2).")
+            return
+        r["mwh"] = round(r["capacitate_ah"] * v / 1e6, 3)
+        r["avertismente"] = [a for a in r["avertismente"] if not a.startswith(("Capacitatea", "Capacitate din Ah"))]
+        r["avertismente"].append(f"Capacitate din Ah: {nr_eu(r['capacitate_ah'])} Ah x {nr_eu(v)} V = "
+                                 f"{nr_eu(r['mwh'])} MWh.")
+        self._arata_atr(r)
 
     def citeste_atr(self):
         cale = filedialog.askopenfilename(title="Alege ATR-ul (PDF)", filetypes=[("PDF", "*.pdf")])

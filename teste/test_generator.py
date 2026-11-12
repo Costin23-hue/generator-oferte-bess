@@ -679,6 +679,18 @@ class CitireATR(unittest.TestCase):
         self.assertEqual((r["nr_elemente"], r["mwh"]), (4, 18))          # 4 x LUNA2000-4,5MWH
         self.assertIn("lipsește rândul „evacuată”", " ".join(r["avertismente"]))
 
+    def test_capacitate_din_ah_cu_tensiune(self):
+        text = ATR_TEST.replace("li-ion", "LUNA2000-4,5MWH") + " cuvânt" * 60
+        vechi = g.TENSIUNE_BATERIE_V
+        g.TENSIUNE_BATERIE_V = {"LUNA2000": 1000}
+        try:
+            r = g.citeste_atr_text(text)
+        finally:
+            g.TENSIUNE_BATERIE_V = vechi
+        self.assertEqual(r["mwh"], 13.44)                    # 13440 Ah x 1000 V
+        self.assertIn("13440 Ah x 1000 V", " ".join(r["avertismente"]))
+        self.assertEqual(g.valoare_setare_text({}, "perechi"), "")
+
     def test_aviz_de_amplasament(self):
         text = ("RETELE ELECTRICE ROMANIA S.A.\nAVIZ DE AMPLASAMENT FAVORABIL\nAvizul de amplasament nu constituie aviz "
                 "tehnic de racordare. veti solicita aviz tehnic de racordare\n" + "text " * 60)

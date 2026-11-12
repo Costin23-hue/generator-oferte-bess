@@ -3,6 +3,9 @@
 Program Python/Tkinter (`generator_oferte_bess.py`) care face oferte BESS: Excel de calcul (template), prezentare
 PPTX + PDF, din Pricing.xlsx (al lui Levon, doar citire) și „Setari generator.xlsx” (Drive, Ofertare BESS).
 Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu tabele unde ajută.
+- Răspunsuri FOARTE scurte: ce s-a schimbat + doar ce trebuie să facă el de mână (fișiere pe care nu le pot modifica).
+  Fără explicații lungi/liste de verificări (testează el). Nu afișa în chat output mare (base64, fișiere întregi):
+  redirecționează în fișier și citește doar ce trebuie.
 
 ## Reguli de lucru
 - Nu se trimite nicio ofertă pe e-mail. Nimic nu se scrie în BESS_Proposals fără OK-ul utilizatorului.
@@ -38,6 +41,7 @@ Utilizatorul (Costin) vorbește română; răspunsurile în română, scurte, cu
   soluție (tabel normă tehnică MW), Distribuție Energie Oltenia (antet „ATR nr. X / data” pe fiecare pagină, unități
   fără paranteze, POC „0/20000/0 V”, uneori lipsește rândul „evacuată”), Transelectrica (draft), E-Distribuție,
   caiet de sarcini (putere min. instalată, string), aviz de amplasament (nu e ATR).
+- Capacitate doar în Ah: MWh = Ah x tensiunea bateriei (TENSIUNE_BATERIE_V în setări sau câmpul din tab-ul ATR).
 - Scanate (fără text) -> doar avertisment (fără OCR deocamdată). Lipsesc exemple E-Distribuție și Delgaz în format text.
 - Regula utilizatorului: puterea skidului poate depăși evacuarea (limitare EMS), dar nu trafo-urile din parc / Pi stocare.
 
