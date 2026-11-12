@@ -3048,6 +3048,16 @@ def transforma_calcul_test(calcul, intrari, nume_existente=(), info_drive=None):
             "online": calcul.get("online")}
 
 
+def nume_skid_prezentare(skid):
+    """Numele skidului din prezentare: dacă are trafo aux inclus (coloana din setări) și numele nu-l scrie deja,
+    se adaugă ' + AUX TRAFO 150kVA'."""
+    nume = str(skid["tip"]).strip()
+    aux = skid.get("aux_skid") or 0
+    if aux > 0 and not re.search(r"aux", nume, re.I):
+        nume += f" + AUX TRAFO {aux:g}kVA"
+    return nume
+
+
 def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status=lambda text: None, reciteste=True):
     """Pasul 2 (după OK): prezentarea PPTX + PDF, cu valorile din Excelul de calcul (recitit, dacă l-ai modificat)."""
     aliniaza_folder(calcul)
@@ -3071,7 +3081,7 @@ def finalizeaza_oferta(calcul, intrari, baterie, nr_baterii, skid, trafo, status
         "[BAT_NAME]": baterie["specs"]["model"],      # codul real (ex. Y104R04C12), nu 'REPT 5,015'
         "[NR_BAT]": str(nr_baterii),
         "[SKID_BRAND]": skid["brand"],
-        "[SKID]": skid["tip"],
+        "[SKID]": nume_skid_prezentare(skid),           # + 'AUX TRAFO 150kVA' din setări, dacă nu e în nume
         # trafo aux extern lângă numele skidului (gol dacă nu e nevoie): ' + Aux transformer 400 kVA'
         "[SKID_AUX]": (f" + {'' if trafo['cant'] == 1 else str(trafo['cant']) + ' x '}Aux transformer "
                        f"{nr_eu(trafo['kva'])} kVA") if trafo else "",

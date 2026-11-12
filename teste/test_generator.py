@@ -152,6 +152,13 @@ class TrafoAux(unittest.TestCase):
         self.assertEqual((o["aux_skid"], o["kva_acoperit"]), (100, 100))
         self.assertFalse(o.get("similar"))
 
+    def test_aux_din_setari_in_numele_din_prezentare(self):
+        self.assertEqual(g.nume_skid_prezentare({"tip": "PWS2-5000 MV", "aux_skid": 400}),
+                         "PWS2-5000 MV + AUX TRAFO 400kVA")
+        self.assertEqual(g.nume_skid_prezentare({"tip": "TBEA 10MW + AUX TRAFO 200kVA", "aux_skid": 200}),
+                         "TBEA 10MW + AUX TRAFO 200kVA")
+        self.assertEqual(g.nume_skid_prezentare({"tip": "X", "aux_skid": 0}), "X")
+
     def test_trafo_in_skid_acopera_tot_sistemul(self):
         o = self.skid("Sinexcel")                            # 2 skiduri x 400 kVA >= 200 kVA
         self.assertEqual((o["kva_necesar"], o["kva_acoperit"], o["kva_trafo"]), (200, 800, 0))
